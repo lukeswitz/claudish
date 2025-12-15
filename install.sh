@@ -1,11 +1,23 @@
 #!/bin/bash
 # claudish installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/MadAppGang/claudish/main/install.sh | bash
+#
+# Security: This script downloads and executes a binary. Review before running.
+# Safer alternative: Download manually and verify checksums
+#   https://github.com/MadAppGang/claudish/releases
 
 set -e
+set -u  # Exit on undefined variables
+set -o pipefail  # Catch errors in pipes
 
 REPO="MadAppGang/claudish"
 INSTALL_DIR="${CLAUDISH_INSTALL_DIR:-$HOME/.local/bin}"
+
+# Cleanup temporary files on exit
+cleanup() {
+    [ -n "${TMP_FILE:-}" ] && [ -f "$TMP_FILE" ] && rm -f "$TMP_FILE"
+}
+trap cleanup EXIT INT TERM
 
 # Colors
 RED='\033[0;31m'
@@ -40,8 +52,15 @@ detect_platform() {
 }
 
 get_latest_version() {
-    curl -sL "https://api.github.com/repos/${REPO}/releases/latest" | \
-        grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/'
+    local response
+    response=$(curl -fsSL --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)
+
+    # Verify we got valid JSON
+    if ! echo "$response" | grep -q '"tag_name"'; then
+        error "Failed to fetch release info from GitHub API"
+    fi
+
+    echo "$response" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/'
 }
 
 compute_sha256() {
@@ -57,7 +76,7 @@ verify_checksum() {
     local checksums_url="https://github.com/${REPO}/releases/download/v${version}/checksums.txt"
     local expected actual
 
-    expected=$(curl -fsSL "$checksums_url" 2>/dev/null | grep "claudish-${platform}" | cut -d' ' -f1)
+    expected=$(curl -fsSL --tlsv1.2 "$checksums_url" 2>/dev/null | grep "claudish-${platform}" | cut -d' ' -f1)
 
     if [ -z "$expected" ]; then
         warn "Checksums not available, skipping verification"
@@ -79,7 +98,7 @@ verify_checksum() {
 }
 
 install() {
-    local platform version download_url tmp_file
+    local platform version download_url
 
     platform=$(detect_platform)
     info "Platform: ${CYAN}${platform}${NC}"
@@ -91,14 +110,20 @@ install() {
     download_url="https://github.com/${REPO}/releases/download/v${version}/claudish-${platform}"
     info "Downloading: ${download_url}"
 
-    tmp_file=$(mktemp)
-    curl -fsSL "$download_url" -o "$tmp_file" || error "Download failed"
+    # Create secure temporary file
+    TMP_FILE=$(mktemp -t claudish.XXXXXXXXXX) || error "Failed to create temporary file"
 
-    verify_checksum "$tmp_file" "$version" "$platform"
+    # Download with TLS 1.2+ and fail on HTTP errors
+    if ! curl -fsSL --tlsv1.2 "$download_url" -o "$TMP_FILE"; then
+        error "Download failed. Check network connection and version availability."
+    fi
 
+    verify_checksum "$TMP_FILE" "$version" "$platform"
+
+    # Install with secure permissions
     mkdir -p "$INSTALL_DIR"
-    chmod +x "$tmp_file"
-    mv "$tmp_file" "${INSTALL_DIR}/claudish"
+    chmod 755 "$TMP_FILE"
+    mv "$TMP_FILE" "${INSTALL_DIR}/claudish"
 
     success "Installed to ${INSTALL_DIR}/claudish"
 
@@ -118,6 +143,17 @@ main() {
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
     echo ""
 
+    # Security notice for piped installs
+    if [ -t 0 ]; then
+        # Running interactively, safe to prompt
+        :
+    else
+        # Piped from curl, show warning
+        warn "Running installer from pipe. Review source before installing:"
+        echo "  ${CYAN}https://github.com/${REPO}/blob/main/install.sh${NC}"
+        echo ""
+    fi
+
     command -v curl &>/dev/null || error "curl is required"
 
     install
@@ -132,6 +168,17 @@ main() {
     echo ""
     echo "MCP server (Claude Code integration):"
     echo "  ${CYAN}claudish --mcp${NC}"
+    echo ""
+    echo -e "${YELLOW}Security Notice:${NC}"
+    echo "  Set up secure credential storage:"
+    echo "    ${CYAN}mkdir -p ~/.config/claudish${NC}"
+    echo "    ${CYAN}echo 'OPENROUTER_API_KEY=sk-or-v1-...' > ~/.config/claudish/credentials${NC}"
+    echo "    ${CYAN}chmod 600 ~/.config/claudish/credentials${NC}"
+    echo ""
+    echo "  Load credentials in your shell profile (~/.bashrc or ~/.zshrc):"
+    echo "    ${CYAN}export \$(grep -v '^#' ~/.config/claudish/credentials | xargs)${NC}"
+    echo ""
+    echo "  Learn more: ${CYAN}https://github.com/${REPO}#security${NC}"
     echo ""
 }
 
