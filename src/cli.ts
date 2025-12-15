@@ -222,6 +222,11 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const { printRecommendedModels } = await import("./system-info.js");
       await printRecommendedModels();
       process.exit(0);
+    } else if (arg === "--local-models") {
+      // Show curated list of recommended local models
+      const { printRecommendedLocalModels } = await import("./system-info.js");
+      printRecommendedLocalModels();
+      process.exit(0);
     } else {
       // All remaining args go to claude CLI
       config.claudeArgs = args.slice(i);

@@ -67,6 +67,14 @@ export class LocalProviderHandler implements ModelHandler {
   private warnedContext80 = false;
   private warnedContext90 = false;
   private pruningEnabled = false; // Track if pruning has been triggered
+  private firstRequestTime: number | null = null; // Track model warm-up
+  private requestCount = 0; // Track total requests for metrics
+
+  // Performance metrics
+  private totalTokensGenerated = 0;
+  private totalGenerationTimeMs = 0;
+  private firstTokenLatencies: number[] = []; // Track TTFT for averaging
+  private lastRequestStartTime = 0; // Track when current request started
 
   // Static health check cache (shared across all instances)
   private static healthCheckCache = new Map<string, { healthy: boolean; timestamp: number }>();
@@ -408,6 +416,72 @@ export class LocalProviderHandler implements ModelHandler {
   }
 
   /**
+   * Update performance metrics and log periodically
+   */
+  private updatePerformanceMetrics(outputTokens: number, durationMs: number, firstTokenLatency?: number): void {
+    this.totalTokensGenerated += outputTokens;
+    this.totalGenerationTimeMs += durationMs;
+
+    if (firstTokenLatency !== undefined) {
+      this.firstTokenLatencies.push(firstTokenLatency);
+    }
+
+    // Check if --show-metrics flag is enabled via env var
+    const showMetrics = process.env.CLAUDISH_SHOW_METRICS === "1" || process.env.CLAUDISH_SHOW_METRICS === "true";
+
+    // Log metrics every 5 requests or if --show-metrics is enabled
+    if (showMetrics || (this.requestCount > 0 && this.requestCount % 5 === 0)) {
+      const avgTokensPerSec = this.totalGenerationTimeMs > 0
+        ? (this.totalTokensGenerated / this.totalGenerationTimeMs) * 1000
+        : 0;
+
+      const avgFirstTokenLatency = this.firstTokenLatencies.length > 0
+        ? this.firstTokenLatencies.reduce((a, b) => a + b, 0) / this.firstTokenLatencies.length
+        : 0;
+
+      const currentTokensPerSec = durationMs > 0 ? (outputTokens / durationMs) * 1000 : 0;
+
+      log(`📊 [Performance] Current: ${currentTokensPerSec.toFixed(1)} tok/s | Avg: ${avgTokensPerSec.toFixed(1)} tok/s | TTFT: ${avgFirstTokenLatency.toFixed(0)}ms | Requests: ${this.requestCount}`);
+    }
+  }
+
+  /**
+   * Estimate tokens in the request before sending (rough estimation)
+   * Uses ~4 characters per token heuristic
+   */
+  private estimateRequestTokens(payload: any): number {
+    let estimate = 0;
+
+    // System prompt (usually first message)
+    if (payload.messages && payload.messages.length > 0 && payload.messages[0]?.role === "system") {
+      const systemContent = payload.messages[0].content;
+      estimate += Math.ceil((typeof systemContent === 'string' ? systemContent.length : JSON.stringify(systemContent).length) / 4);
+    }
+
+    // Tool definitions (can be very large!)
+    if (payload.tools && payload.tools.length > 0) {
+      const toolsJson = JSON.stringify(payload.tools);
+      estimate += Math.ceil(toolsJson.length / 4);
+    }
+
+    // All messages
+    for (const msg of payload.messages || []) {
+      if (typeof msg.content === 'string') {
+        estimate += Math.ceil(msg.content.length / 4);
+      } else if (msg.content) {
+        // Array content (images, etc.)
+        estimate += Math.ceil(JSON.stringify(msg.content).length / 4);
+      }
+      // Tool calls in assistant messages
+      if (msg.tool_calls) {
+        estimate += Math.ceil(JSON.stringify(msg.tool_calls).length / 4);
+      }
+    }
+
+    return estimate;
+  }
+
+  /**
    * Write token tracking file for status line
    */
   private writeTokenFile(input: number, output: number): void {
@@ -420,6 +494,12 @@ export class LocalProviderHandler implements ModelHandler {
       }
       this.sessionOutputTokens += output; // Accumulate outputs
       const sessionTotal = this.sessionInputTokens + this.sessionOutputTokens;
+
+      // Update performance metrics when we have output tokens
+      if (output > 0 && this.lastRequestStartTime > 0) {
+        const durationMs = Date.now() - this.lastRequestStartTime;
+        this.updatePerformanceMetrics(output, durationMs);
+      }
 
       // Calculate context usage: input (full context) + accumulated outputs
       const leftPct = this.contextWindow > 0
@@ -813,9 +893,35 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
     // Make request to local provider
     const apiUrl = `${this.provider.baseUrl}${this.provider.apiPath}`;
 
+    // Preflight context estimation - warn before sending if likely to exceed context
+    const estimatedInputTokens = this.estimateRequestTokens(openAIPayload);
+    const estimatedOutputTokens = openAIPayload.max_tokens || 4096;
+    const spaceRemaining = this.contextWindow - this.sessionInputTokens - this.sessionOutputTokens;
+
+    if (estimatedInputTokens > spaceRemaining) {
+      log(`⚠️  [LocalProvider] WARNING: Request may exceed context window!`);
+      log(`   Estimated request: ${estimatedInputTokens} tokens`);
+      log(`   Available space: ${spaceRemaining} tokens`);
+      log(`   Context window: ${this.contextWindow} tokens`);
+      log(`   Recommendation: Restart session or reduce request size`);
+    } else if (estimatedInputTokens + estimatedOutputTokens > spaceRemaining) {
+      const overflow = (estimatedInputTokens + estimatedOutputTokens) - spaceRemaining;
+      log(`⚠️  [LocalProvider] WARNING: Request + expected output may exceed context by ~${overflow} tokens`);
+      log(`   Estimated: ${estimatedInputTokens} input + ${estimatedOutputTokens} output = ${estimatedInputTokens + estimatedOutputTokens} tokens`);
+      log(`   Available: ${spaceRemaining} tokens`);
+    }
+
     // Debug logging (only to file, not console)
-    log(`[LocalProvider:${this.provider.name}] Request: ${openAIPayload.tools?.length || 0} tools, ${messages.length} messages`);
+    log(`[LocalProvider:${this.provider.name}] Request: ${openAIPayload.tools?.length || 0} tools, ${messages.length} messages (est. ${estimatedInputTokens} tokens)`);
     log(`[LocalProvider:${this.provider.name}] Endpoint: ${apiUrl}`);
+
+    // Track model warm-up on first request
+    if (!this.firstRequestTime) {
+      log(`[LocalProvider:${this.provider.name}] First request to ${this.modelName} - model may need loading (typically 5-30s)...`);
+    }
+
+    // Track request start time for performance metrics
+    this.lastRequestStartTime = Date.now();
 
     try {
       // Use a long timeout for local providers - they need time for prompt processing
@@ -827,6 +933,7 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
         controller.abort();
       }, 600000); // 10 minutes - local models can be slow
 
+      const requestStartTime = Date.now();
       const response = await fetch(apiUrl, {
         method: "POST",
         headers: {
@@ -839,6 +946,14 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
       });
 
       clearTimeout(timeoutId);
+
+      // Track first request time (model warm-up)
+      const requestElapsed = Date.now() - requestStartTime;
+      if (!this.firstRequestTime && requestElapsed > 5000) {
+        this.firstRequestTime = requestElapsed;
+        log(`[LocalProvider:${this.provider.name}] ✅ Model loaded in ${(requestElapsed/1000).toFixed(1)}s`);
+      }
+      this.requestCount++;
 
       log(`[LocalProvider:${this.provider.name}] Response status: ${response.status}`);
       if (!response.ok) {

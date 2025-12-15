@@ -199,6 +199,97 @@ export function recommendModelSize(resources: SystemResources): string {
   }
 }
 
+// Curated list of local models that work well with Claude Code
+export const RECOMMENDED_LOCAL_MODELS = [
+  {
+    name: 'Qwen 2.5 Coder 7B',
+    ollama: 'qwen2.5-coder:7b',
+    size: '7B',
+    quantization: 'Q4_K_M',
+    ram: '8GB+',
+    diskSpace: '4.5GB',
+    description: 'Best all-around coding model - strong tool calling, good instruction following',
+    useCase: 'General coding, debugging, refactoring',
+  },
+  {
+    name: 'Qwen 2.5 Coder 14B',
+    ollama: 'qwen2.5-coder:14b',
+    size: '14B',
+    quantization: 'Q4_K_M',
+    ram: '16GB+',
+    diskSpace: '8.5GB',
+    description: 'Higher quality than 7B, better for complex tasks',
+    useCase: 'Complex refactoring, architecture decisions',
+  },
+  {
+    name: 'Llama 3.2 3B',
+    ollama: 'llama3.2:3b',
+    size: '3B',
+    quantization: 'Q4_K_M',
+    ram: '6GB+',
+    diskSpace: '2GB',
+    description: 'Budget option - fast and efficient for simple tasks',
+    useCase: 'Quick fixes, simple code generation',
+  },
+  {
+    name: 'DeepSeek Coder 6.7B',
+    ollama: 'deepseek-coder:6.7b',
+    size: '6.7B',
+    quantization: 'Q4_K_M',
+    ram: '8GB+',
+    diskSpace: '4GB',
+    description: 'Strong coding performance, good at following instructions',
+    useCase: 'Code generation, debugging',
+  },
+  {
+    name: 'Qwen 2.5 Coder 32B',
+    ollama: 'qwen2.5-coder:32b',
+    size: '32B',
+    quantization: 'Q4_K_M',
+    ram: '32GB+',
+    diskSpace: '18GB',
+    description: 'High-end option for complex projects',
+    useCase: 'Large codebases, complex reasoning',
+  },
+];
+
+/**
+ * Print curated list of recommended local models
+ */
+export function printRecommendedLocalModels(): void {
+  console.log('\n' + '='.repeat(70));
+  console.log('⭐ Recommended Local Models for Claude Code');
+  console.log('='.repeat(70));
+
+  console.log('\nThese models have been tested and work well with Claude Code:\n');
+
+  for (const model of RECOMMENDED_LOCAL_MODELS) {
+    console.log(`📦 ${model.name}`);
+    console.log(`   Ollama: ${model.ollama}`);
+    console.log(`   Size: ${model.size} (${model.quantization}) | RAM: ${model.ram} | Disk: ${model.diskSpace}`);
+    console.log(`   ${model.description}`);
+    console.log(`   Best for: ${model.useCase}`);
+    console.log('');
+  }
+
+  console.log('📖 Quick Start:');
+  console.log('   1. Install Ollama: https://ollama.com');
+  console.log('   2. Pull a model: ollama pull qwen2.5-coder:7b');
+  console.log('   3. Run Claudish: claudish --model ollama/qwen2.5-coder:7b "task"');
+
+  console.log('\n💡 Pro Tips:');
+  console.log('   - Start with qwen2.5-coder:7b (best quality/performance)');
+  console.log('   - Use --lite mode for 8K-16K context windows');
+  console.log('   - Set CLAUDISH_SHOW_METRICS=1 to see tokens/sec performance');
+  console.log('   - Check hardware fit: claudish --check-system');
+
+  console.log('\n📚 Learn More:');
+  console.log('   - Model guide: docs/models/local-models.md');
+  console.log('   - Quantization explained: docs/models/local-models.md#quantization');
+
+  console.log('\n' + '='.repeat(70) + '\n');
+}
+
 /**
  * Print recommended models for detected system
  */
@@ -216,6 +307,20 @@ export async function printRecommendedModels(): Promise<void> {
   const recommendation = recommendModelSize(resources);
   console.log(`   ${recommendation}`);
 
+  // Filter recommended models based on available RAM
+  const suitableModels = RECOMMENDED_LOCAL_MODELS.filter(model => {
+    const ramRequired = parseInt(model.ram);
+    return resources.availableRAM >= ramRequired;
+  });
+
+  if (suitableModels.length > 0) {
+    console.log('\n🌟 Best Models for Your Hardware:');
+    for (const model of suitableModels.slice(0, 3)) { // Show top 3 matches
+      console.log(`   ${model.name} (${model.ollama})`);
+      console.log(`      ${model.description}`);
+    }
+  }
+
   console.log('\n💡 Tips:');
   console.log('   - Q4_K_M quantization offers the best quality/size ratio');
   console.log('   - Use --lite mode for models with 8K-16K context windows');
@@ -229,6 +334,7 @@ export async function printRecommendedModels(): Promise<void> {
   console.log('\n📖 Usage:');
   console.log('   claudish --model ollama/qwen2.5-coder:7b "task"');
   console.log('   claudish --lite --model ollama/qwen2.5-coder:7b "task"  # Low-resource mode');
+  console.log('   claudish --local-models  # See curated list of local models');
 
   console.log('\n' + '='.repeat(70) + '\n');
 }
