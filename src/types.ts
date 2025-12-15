@@ -5,9 +5,9 @@
 export const OPENROUTER_MODELS = [
   "x-ai/grok-code-fast-1",
   "minimax/minimax-m2",
-  "google/gemini-2.5-flash",
   "openai/gpt-5",
   "openai/gpt-5.1-codex",
+  "google/gemini-2.5-flash",
   "qwen/qwen3-vl-235b-a22b-instruct",
   "openrouter/polaris-alpha",
   "custom",

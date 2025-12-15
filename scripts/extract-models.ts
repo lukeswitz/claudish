@@ -164,7 +164,7 @@ export type OpenRouterModel = (typeof OPENROUTER_MODELS)[number];
 try {
 	const sharedModelsPath = join(
 		import.meta.dir,
-		"../../../shared/recommended-models.md",
+		"../shared/recommended-models.md",
 	);
 	const configPath = join(import.meta.dir, "../src/config.ts");
 	const typesPath = join(import.meta.dir, "../src/types.ts");

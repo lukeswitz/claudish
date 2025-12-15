@@ -223,9 +223,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       await printRecommendedModels();
       process.exit(0);
     } else if (arg === "--local-models") {
-      // Show curated list of recommended local models
+      // Show installed local models (Ollama + LM Studio)
       const { printRecommendedLocalModels } = await import("./system-info.js");
-      printRecommendedLocalModels();
+      await printRecommendedLocalModels();
       process.exit(0);
     } else {
       // All remaining args go to claude CLI

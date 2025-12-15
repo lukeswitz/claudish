@@ -59,6 +59,76 @@ const TRUSTED_FREE_PROVIDERS = [
 ];
 
 /**
+ * Fetch local Ollama models
+ */
+async function fetchOllamaModels(): Promise<ModelInfo[]> {
+  try {
+    const ollamaHost = process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+    const response = await fetch(`${ollamaHost}/api/tags`, {
+      signal: AbortSignal.timeout(2000) // 2 second timeout
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    const models = data.models || [];
+
+    return models.map((model: any) => ({
+      id: `ollama/${model.name}`,
+      name: `Ollama: ${model.name}`,
+      description: `Local model - ${(model.size / (1024 ** 3)).toFixed(1)}GB`,
+      provider: "Ollama (Local)",
+      pricing: {
+        input: "FREE",
+        output: "FREE",
+        average: "FREE"
+      },
+      context: "Local",
+      isFree: true,
+      supportsTools: true
+    }));
+  } catch {
+    // Ollama not running or not available
+    return [];
+  }
+}
+
+/**
+ * Fetch local LM Studio models
+ */
+async function fetchLMStudioModels(): Promise<ModelInfo[]> {
+  try {
+    const lmstudioHost = process.env.LMSTUDIO_BASE_URL || "http://localhost:1234";
+    const response = await fetch(`${lmstudioHost}/v1/models`, {
+      signal: AbortSignal.timeout(2000) // 2 second timeout
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    const models = data.data || [];
+
+    return models.map((model: any) => ({
+      id: `lmstudio/${model.id}`,
+      name: `LM Studio: ${model.id}`,
+      description: `Local model`,
+      provider: "LM Studio (Local)",
+      pricing: {
+        input: "FREE",
+        output: "FREE",
+        average: "FREE"
+      },
+      context: "Local",
+      isFree: true,
+      supportsTools: true
+    }));
+  } catch {
+    // LM Studio not running or not available
+    return [];
+  }
+}
+
+/**
  * Load recommended models from JSON
  */
 function loadRecommendedModels(): ModelInfo[] {
@@ -273,6 +343,14 @@ export async function selectModel(
 
   let models: ModelInfo[];
 
+  // Always fetch local models first
+  const localModels: ModelInfo[] = [];
+  const [ollamaModels, lmstudioModels] = await Promise.all([
+    fetchOllamaModels(),
+    fetchLMStudioModels()
+  ]);
+  localModels.push(...ollamaModels, ...lmstudioModels);
+
   if (freeOnly) {
     models = await getFreeModels();
     if (models.length === 0) {
@@ -290,6 +368,11 @@ export async function selectModel(
     }
   } else {
     models = await getAllModelsForSearch();
+  }
+
+  // Prepend local models at the top
+  if (localModels.length > 0) {
+    models = [...localModels, ...models];
   }
 
   const promptMessage = message || (freeOnly

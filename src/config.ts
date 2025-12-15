@@ -23,34 +23,34 @@ export const MODEL_INFO: Record<
     priority: 2,
     provider: "MiniMax",
   },
-  "google/gemini-2.5-flash": {
-    name: "Advanced reasoning + vision",
-    description: "Advanced reasoning + vision",
-    priority: 6,
-    provider: "Google",
-  },
   "openai/gpt-5": {
     name: "Most advanced reasoning",
     description: "Most advanced reasoning",
-    priority: 4,
+    priority: 3,
     provider: "OpenAI",
   },
   "openai/gpt-5.1-codex": {
     name: "Specialized for software engineering",
     description: "Specialized for software engineering",
-    priority: 5,
+    priority: 4,
     provider: "OpenAI",
+  },
+  "google/gemini-2.5-flash": {
+    name: "Advanced reasoning + vision",
+    description: "Advanced reasoning + vision",
+    priority: 5,
+    provider: "Google",
   },
   "qwen/qwen3-vl-235b-a22b-instruct": {
     name: "Multimodal with OCR",
     description: "Multimodal with OCR",
-    priority: 7,
+    priority: 6,
     provider: "Alibaba",
   },
   "openrouter/polaris-alpha": {
     name: "FREE experimental (logs usage)",
     description: "FREE experimental (logs usage)",
-    priority: 8,
+    priority: 7,
     provider: "OpenRouter",
   },
   "custom": {
@@ -79,13 +79,6 @@ export const ENV = {
   ANTHROPIC_DEFAULT_SONNET_MODEL: "ANTHROPIC_DEFAULT_SONNET_MODEL",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   CLAUDE_CODE_SUBAGENT_MODEL: "CLAUDE_CODE_SUBAGENT_MODEL",
-  // Local provider endpoints (OpenAI-compatible)
-  OLLAMA_BASE_URL: "OLLAMA_BASE_URL", // Ollama server (default: http://localhost:11434)
-  OLLAMA_HOST: "OLLAMA_HOST", // Alias for OLLAMA_BASE_URL
-  LMSTUDIO_BASE_URL: "LMSTUDIO_BASE_URL", // LM Studio server (default: http://localhost:1234)
-  VLLM_BASE_URL: "VLLM_BASE_URL", // vLLM server (default: http://localhost:8000)
-  // Local model optimizations
-  CLAUDISH_SUMMARIZE_TOOLS: "CLAUDISH_SUMMARIZE_TOOLS", // Summarize tool descriptions to reduce prompt size
 } as const;
 
 // OpenRouter API Configuration

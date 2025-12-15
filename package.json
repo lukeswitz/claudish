@@ -32,15 +32,15 @@
     "postinstall": "node scripts/postinstall.cjs"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.6",
-    "@inquirer/prompts": "^8.0.1",
-    "@inquirer/search": "^4.0.1",
-    "@modelcontextprotocol/sdk": "^1.22.0",
+    "@hono/node-server": "^1.19.7",
+    "@inquirer/prompts": "^8.1.0",
+    "@inquirer/search": "^4.0.3",
+    "@modelcontextprotocol/sdk": "^1.25.0",
     "dotenv": "^17.2.3",
-    "hono": "^4.10.6",
-    "semver": "^7.6.0",
+    "hono": "^4.11.1",
+    "semver": "^7.7.3",
     "undici": "^7.16.0",
-    "zod": "^4.1.13"
+    "zod": "^4.2.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

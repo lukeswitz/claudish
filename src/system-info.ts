@@ -254,38 +254,138 @@ export const RECOMMENDED_LOCAL_MODELS = [
 ];
 
 /**
- * Print curated list of recommended local models
+ * Fetch installed Ollama models
  */
-export function printRecommendedLocalModels(): void {
+async function fetchInstalledOllamaModels(): Promise<any[]> {
+  try {
+    const ollamaHost = process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+    const response = await fetch(`${ollamaHost}/api/tags`, {
+      signal: AbortSignal.timeout(2000)
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    return data.models || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Scan LM Studio models directory
+ */
+async function scanLMStudioModels(): Promise<Array<{name: string, path: string, size: number}>> {
+  try {
+    const { readdirSync, statSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
+
+    const lmStudioPath = join(homedir(), '.cache', 'lm-studio', 'models');
+
+    try {
+      const providerDirs = readdirSync(lmStudioPath, { withFileTypes: true });
+      const models: Array<{name: string, path: string, size: number}> = [];
+
+      for (const providerDir of providerDirs) {
+        if (!providerDir.isDirectory() || providerDir.name.startsWith('.')) continue;
+
+        const providerPath = join(lmStudioPath, providerDir.name);
+
+        try {
+          const modelDirs = readdirSync(providerPath, { withFileTypes: true });
+
+          for (const modelDir of modelDirs) {
+            if (!modelDir.isDirectory()) continue;
+
+            const modelPath = join(providerPath, modelDir.name);
+
+            try {
+              const files = readdirSync(modelPath);
+              const ggufFiles = files.filter(f => f.endsWith('.gguf'));
+
+              if (ggufFiles.length > 0) {
+                const ggufFile = ggufFiles[0];
+                const fullPath = join(modelPath, ggufFile);
+                const stats = statSync(fullPath);
+
+                models.push({
+                  name: `${providerDir.name}/${modelDir.name}`,
+                  path: ggufFile,
+                  size: stats.size
+                });
+              }
+            } catch {
+              continue;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return models;
+    } catch {
+      return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Print installed local models (Ollama + LM Studio)
+ */
+export async function printRecommendedLocalModels(): Promise<void> {
   console.log('\n' + '='.repeat(70));
-  console.log('⭐ Recommended Local Models for Claude Code');
+  console.log('💻 Your Installed Local Models');
   console.log('='.repeat(70));
 
-  console.log('\nThese models have been tested and work well with Claude Code:\n');
+  // Fetch Ollama models
+  const ollamaModels = await fetchInstalledOllamaModels();
 
-  for (const model of RECOMMENDED_LOCAL_MODELS) {
-    console.log(`📦 ${model.name}`);
-    console.log(`   Ollama: ${model.ollama}`);
-    console.log(`   Size: ${model.size} (${model.quantization}) | RAM: ${model.ram} | Disk: ${model.diskSpace}`);
-    console.log(`   ${model.description}`);
-    console.log(`   Best for: ${model.useCase}`);
-    console.log('');
+  if (ollamaModels.length > 0) {
+    console.log('\n📦 Ollama Models:\n');
+    for (const model of ollamaModels) {
+      const sizeGB = (model.size / (1024 ** 3)).toFixed(1);
+      const modifiedDate = new Date(model.modified_at).toLocaleDateString();
+      console.log(`   ${model.name}`);
+      console.log(`      Size: ${sizeGB}GB | Modified: ${modifiedDate}`);
+      console.log(`      Usage: claudish --model ollama/${model.name}`);
+      console.log('');
+    }
+  } else {
+    console.log('\n⚠️  No Ollama models found');
+    console.log('   Install Ollama: https://ollama.com');
+    console.log('   Pull a model: ollama pull qwen2.5-coder:7b\n');
   }
 
-  console.log('📖 Quick Start:');
-  console.log('   1. Install Ollama: https://ollama.com');
-  console.log('   2. Pull a model: ollama pull qwen2.5-coder:7b');
-  console.log('   3. Run Claudish: claudish --model ollama/qwen2.5-coder:7b "task"');
+  // Scan LM Studio models
+  const lmStudioModels = await scanLMStudioModels();
 
-  console.log('\n💡 Pro Tips:');
-  console.log('   - Start with qwen2.5-coder:7b (best quality/performance)');
-  console.log('   - Use --lite mode for 8K-16K context windows');
-  console.log('   - Set CLAUDISH_SHOW_METRICS=1 to see tokens/sec performance');
-  console.log('   - Check hardware fit: claudish --check-system');
+  if (lmStudioModels.length > 0) {
+    console.log('📦 LM Studio Models:\n');
+    for (const model of lmStudioModels) {
+      const sizeGB = (model.size / (1024 ** 3)).toFixed(1);
+      console.log(`   ${model.name}`);
+      console.log(`      File: ${model.path} | Size: ${sizeGB}GB`);
+      console.log(`      Usage: claudish --model lmstudio/${model.name.split('/')[1]}`);
+      console.log('');
+    }
+  } else {
+    console.log('⚠️  No LM Studio models found');
+    console.log('   Path: ~/.cache/lm-studio/models/\n');
+  }
 
-  console.log('\n📚 Learn More:');
-  console.log('   - Model guide: docs/models/local-models.md');
-  console.log('   - Quantization explained: docs/models/local-models.md#quantization');
+  console.log('💡 Quick Tips:');
+  console.log('   - Set default: export CLAUDISH_MODEL=ollama/qwen2.5-coder:7b');
+  console.log('   - Lite mode: claudish --lite --model ollama/... (for low resources)');
+  console.log('   - Check fit: claudish --check-system');
+
+  console.log('\n📚 Recommended Models to Install:');
+  console.log('   ollama pull qwen2.5-coder:7b    # Best all-around coder');
+  console.log('   ollama pull deepseek-r1:7b      # Strong reasoning');
+  console.log('   ollama pull qwen2.5-coder:32b   # High-end (32GB+ RAM)');
 
   console.log('\n' + '='.repeat(70) + '\n');
 }
