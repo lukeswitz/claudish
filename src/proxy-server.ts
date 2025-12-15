@@ -11,6 +11,7 @@ import { resolveProvider, parseUrlModel, createUrlProvider } from "./providers/p
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
+  toolMode?: 'full' | 'standard' | 'essential' | 'ultra-compact'; // Tool filtering mode
 }
 
 export async function createProxyServer(
@@ -39,6 +40,7 @@ export async function createProxyServer(
   // Local provider options
   const localProviderOptions: LocalProviderOptions = {
     summarizeTools: options.summarizeTools,
+    toolMode: options.toolMode,
   };
 
   // Helper to get or create Local Provider handler for a target model

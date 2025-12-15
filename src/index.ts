@@ -140,6 +140,7 @@ async function runCli() {
       },
       {
         summarizeTools: cliConfig.summarizeTools,
+        toolMode: cliConfig.toolMode,
       }
     );
 

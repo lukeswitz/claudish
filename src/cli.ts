@@ -204,6 +204,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--summarize-tools") {
       // Summarize tool descriptions to reduce prompt size for local models
       config.summarizeTools = true;
+    } else if (arg === "--essential-tools") {
+      // Use only essential tools (7 core tools)
+      config.toolMode = 'essential';
+    } else if (arg === "--standard-tools") {
+      // Use standard tools (12 common tools)
+      config.toolMode = 'standard';
+    } else if (arg === "--ultra-compact-tools") {
+      // Ultra-compact tool descriptions + filtering
+      config.toolMode = 'ultra-compact';
+      config.summarizeTools = true;
     } else {
       // All remaining args go to claude CLI
       config.claudeArgs = args.slice(i);

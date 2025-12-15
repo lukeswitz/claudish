@@ -194,19 +194,54 @@ function processAssistantMessage(msg: any, messages: any[], simpleFormat = false
 }
 
 /**
+ * Essential tools for low-resource models (7 core tools)
+ */
+const ESSENTIAL_TOOLS = new Set([
+  'Read', 'Write', 'Edit',    // Core file operations
+  'Bash',                      // Command execution
+  'Grep', 'Glob',             // Search
+  'Task',                      // Agent spawning
+]);
+
+/**
+ * Standard tools set (12 common tools)
+ */
+const STANDARD_TOOLS = new Set([
+  ...ESSENTIAL_TOOLS,
+  'WebFetch', 'WebSearch',    // Web access
+  'TodoWrite',                // Planning
+  'AskUserQuestion',          // Interaction
+]);
+
+/**
  * Convert Claude tools to OpenAI function format
  */
-export function convertToolsToOpenAI(req: any, summarize = false): any[] {
-  return (
-    req.tools?.map((tool: any) => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        description: summarize ? summarizeToolDescription(tool.name, tool.description) : tool.description,
-        parameters: summarize ? summarizeToolParameters(tool.input_schema) : removeUriFormat(tool.input_schema),
-      },
-    })) || []
-  );
+export function convertToolsToOpenAI(req: any, summarize = false, toolMode: 'full' | 'standard' | 'essential' | 'ultra-compact' = 'full'): any[] {
+  if (!req.tools) return [];
+
+  // Filter tools based on mode
+  let tools = req.tools;
+  if (toolMode === 'essential') {
+    tools = tools.filter((t: any) => ESSENTIAL_TOOLS.has(t.name));
+  } else if (toolMode === 'standard') {
+    tools = tools.filter((t: any) => STANDARD_TOOLS.has(t.name));
+  }
+
+  // Apply ultra-compact mode if requested
+  const useUltraCompact = toolMode === 'ultra-compact';
+
+  return tools.map((tool: any) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: useUltraCompact
+        ? summarizeToolDescriptionUltraCompact(tool.name, tool.description)
+        : (summarize ? summarizeToolDescription(tool.name, tool.description) : tool.description),
+      parameters: useUltraCompact
+        ? summarizeParametersUltraCompact(tool.input_schema)
+        : (summarize ? summarizeToolParameters(tool.input_schema) : removeUriFormat(tool.input_schema)),
+    },
+  }));
 }
 
 /**
@@ -236,6 +271,35 @@ function summarizeToolDescription(name: string, description: string): string {
 }
 
 /**
+ * Ultra-compact tool description (just tool name + verb phrase)
+ * For low-resource models: reduces tool definitions by 60-75%
+ */
+function summarizeToolDescriptionUltraCompact(name: string, description: string): string {
+  const actionVerbs: Record<string, string> = {
+    'Read': 'reads files',
+    'Write': 'writes files',
+    'Edit': 'edits files',
+    'Bash': 'runs commands',
+    'Grep': 'searches text',
+    'Glob': 'finds files',
+    'Task': 'spawns agents',
+    'WebFetch': 'fetches URLs',
+    'WebSearch': 'searches web',
+    'TodoWrite': 'manages todos',
+    'AskUserQuestion': 'asks user',
+    'NotebookEdit': 'edits notebooks',
+    'KillShell': 'kills shells',
+    'Skill': 'runs skills',
+    'SlashCommand': 'runs commands',
+    'EnterPlanMode': 'enters planning',
+    'ExitPlanMode': 'exits planning',
+    'TaskOutput': 'gets task output',
+  };
+
+  return actionVerbs[name] || description.split(/[.!?]/)[0].slice(0, 30);
+}
+
+/**
  * Summarize tool parameters schema to reduce token count
  * Keeps required fields and simplifies descriptions
  */
@@ -261,6 +325,40 @@ function summarizeToolParameters(schema: any): any {
   }
 
   return summarized;
+}
+
+/**
+ * Ultra-compact parameters schema
+ * Only include descriptions for required params, max 20 chars
+ */
+function summarizeParametersUltraCompact(schema: any): any {
+  if (!schema) return schema;
+
+  const result: any = {
+    type: 'object',
+    properties: {},
+    required: schema.required || []
+  };
+
+  if (schema.properties) {
+    for (const [key, prop] of Object.entries(schema.properties)) {
+      const p = prop as any;
+      result.properties[key] = {
+        type: p.type,
+        // Only include description for required params, max 20 chars
+        ...(schema.required?.includes(key) && p.description
+          ? { description: p.description.slice(0, 20) }
+          : {})
+      };
+
+      // Keep enum values if present (but limit to 3)
+      if (p.enum && Array.isArray(p.enum)) {
+        result.properties[key].enum = p.enum.slice(0, 3);
+      }
+    }
+  }
+
+  return result;
 }
 
 /**

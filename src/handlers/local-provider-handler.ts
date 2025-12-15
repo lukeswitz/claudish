@@ -12,7 +12,7 @@ import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager } from "../middleware/index.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "undici";
@@ -35,6 +35,7 @@ const localProviderAgent = new Agent({
 
 export interface LocalProviderOptions {
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size
+  toolMode?: 'full' | 'standard' | 'essential' | 'ultra-compact'; // Tool filtering mode
 }
 
 export class LocalProviderHandler implements ModelHandler {
@@ -49,6 +50,12 @@ export class LocalProviderHandler implements ModelHandler {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private options: LocalProviderOptions;
+  private warnedContext80 = false;
+  private warnedContext90 = false;
+
+  // Static health check cache (shared across all instances)
+  private static healthCheckCache = new Map<string, { healthy: boolean; timestamp: number }>();
+  private static HEALTH_CHECK_TTL = 60000; // 60 seconds
 
   constructor(provider: LocalProvider, modelName: string, port: number, options: LocalProviderOptions = {}) {
     this.provider = provider;
@@ -71,6 +78,9 @@ export class LocalProviderHandler implements ModelHandler {
       }
     }
 
+    // Cleanup stale token files on startup
+    this.cleanupStaleTokenFiles();
+
     // Write initial token file so status line has data from the start
     this.writeTokenFile(0, 0);
     if (options.summarizeTools) {
@@ -79,10 +89,54 @@ export class LocalProviderHandler implements ModelHandler {
   }
 
   /**
-   * Check if the local provider is available
+   * Cleanup stale token files from crashed sessions (>24 hours old)
+   */
+  private cleanupStaleTokenFiles(): void {
+    try {
+      const tempDir = tmpdir();
+      const files = readdirSync(tempDir);
+      const staleThreshold = Date.now() - 86400000; // 24 hours
+      let cleanedCount = 0;
+
+      for (const file of files) {
+        if (file.startsWith('claudish-tokens-')) {
+          const filePath = join(tempDir, file);
+          try {
+            const stats = statSync(filePath);
+            if (stats.mtimeMs < staleThreshold) {
+              unlinkSync(filePath);
+              cleanedCount++;
+            }
+          } catch {
+            // Ignore errors for individual files
+          }
+        }
+      }
+
+      if (cleanedCount > 0) {
+        log(`[LocalProvider:${this.provider.name}] Cleaned up ${cleanedCount} stale token file(s)`);
+      }
+    } catch (e) {
+      // Ignore cleanup errors - not critical
+    }
+  }
+
+  /**
+   * Check if the local provider is available (with 60s cache)
    */
   async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
+
+    // Check cache first
+    const now = Date.now();
+    const cached = LocalProviderHandler.healthCheckCache.get(this.provider.baseUrl);
+
+    if (cached && (now - cached.timestamp) < LocalProviderHandler.HEALTH_CHECK_TTL) {
+      log(`[LocalProvider:${this.provider.name}] Using cached health check (${Math.round((now - cached.timestamp)/1000)}s old)`);
+      this.isHealthy = cached.healthy;
+      this.healthChecked = true;
+      return cached.healthy;
+    }
 
     // Try Ollama-specific health check first
     try {
@@ -96,6 +150,7 @@ export class LocalProviderHandler implements ModelHandler {
       if (response.ok) {
         this.isHealthy = true;
         this.healthChecked = true;
+        LocalProviderHandler.healthCheckCache.set(this.provider.baseUrl, { healthy: true, timestamp: now });
         log(`[LocalProvider:${this.provider.name}] Health check passed (/api/tags)`);
         return true;
       }
@@ -115,6 +170,7 @@ export class LocalProviderHandler implements ModelHandler {
       if (response.ok) {
         this.isHealthy = true;
         this.healthChecked = true;
+        LocalProviderHandler.healthCheckCache.set(this.provider.baseUrl, { healthy: true, timestamp: now });
         log(`[LocalProvider:${this.provider.name}] Health check passed (/v1/models)`);
         return true;
       }
@@ -125,6 +181,7 @@ export class LocalProviderHandler implements ModelHandler {
 
     this.healthChecked = true;
     this.isHealthy = false;
+    LocalProviderHandler.healthCheckCache.set(this.provider.baseUrl, { healthy: false, timestamp: now });
     log(`[LocalProvider:${this.provider.name}] Health check FAILED - provider not available`);
     return false;
   }
@@ -255,6 +312,17 @@ export class LocalProviderHandler implements ModelHandler {
         ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - sessionTotal) / this.contextWindow) * 100)))
         : 100;
 
+      // Context usage warnings
+      if (leftPct < 20 && !this.warnedContext80) {
+        this.warnedContext80 = true;
+        log(`⚠️  [LocalProvider] WARNING: Context usage >80% (${100-leftPct}% used, ${this.contextWindow - sessionTotal} tokens remaining). Consider restarting session.`);
+      }
+
+      if (leftPct < 10 && !this.warnedContext90) {
+        this.warnedContext90 = true;
+        log(`🚨 [LocalProvider] CRITICAL: Context usage >90% (${100-leftPct}% used, ${this.contextWindow - sessionTotal} tokens remaining). Next request may fail.`);
+      }
+
       const data = {
         input_tokens: this.sessionInputTokens,
         output_tokens: this.sessionOutputTokens,
@@ -301,15 +369,16 @@ export class LocalProviderHandler implements ModelHandler {
     // MLX doesn't handle array content or tool role messages
     const useSimpleFormat = this.provider.name === "mlx";
     const messages = convertMessagesToOpenAI(claudeRequest, target, filterIdentity, useSimpleFormat);
-    const tools = convertToolsToOpenAI(claudeRequest, this.options.summarizeTools);
+    const toolMode = this.options.toolMode || (this.options.summarizeTools ? 'standard' : 'full');
+    const tools = convertToolsToOpenAI(claudeRequest, this.options.summarizeTools, toolMode);
 
     // Check capability: strip tools if not supported
     const finalTools = this.provider.capabilities.supportsTools ? tools : [];
     if (tools.length > 0 && !this.provider.capabilities.supportsTools) {
       log(`[LocalProvider:${this.provider.name}] Tools stripped (not supported)`);
     }
-    if (tools.length > 0 && this.options.summarizeTools) {
-      log(`[LocalProvider:${this.provider.name}] Tools summarized (${tools.length} tools)`);
+    if (tools.length > 0 && (this.options.summarizeTools || this.options.toolMode)) {
+      log(`[LocalProvider:${this.provider.name}] Tools processed: ${tools.length} tools, mode=${toolMode}`);
     }
 
     // Add guidance to system prompt for local models
@@ -474,11 +543,16 @@ If you cannot use structured tool_calls, format as JSON:
 
     // For Ollama: set context window size to ensure tools aren't truncated
     // This is critical - Ollama defaults to 2048 and silently truncates, losing tool definitions!
+    // Also enable prompt caching via keep_alive for faster follow-up requests
     if (this.provider.name === "ollama") {
       // Use detected context window, or 32K minimum for tool calling (Claude Code sends large system prompts)
       const numCtx = Math.max(this.contextWindow, 32768);
-      openAIPayload.options = { num_ctx: numCtx };
-      log(`[LocalProvider:${this.provider.name}] Setting num_ctx: ${numCtx} (detected: ${this.contextWindow})`);
+      const keepAlive = process.env.CLAUDISH_OLLAMA_KEEP_ALIVE || "30m";
+      openAIPayload.options = {
+        num_ctx: numCtx,
+        keep_alive: keepAlive  // Keep model + KV cache in memory for faster requests
+      };
+      log(`[LocalProvider:${this.provider.name}] Setting num_ctx: ${numCtx} (detected: ${this.contextWindow}), keep_alive: ${keepAlive}`);
     }
 
     // Handle tool choice
