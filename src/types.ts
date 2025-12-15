@@ -49,6 +49,7 @@ export interface ClaudishConfig {
   // Local model optimizations
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size for local models
   toolMode?: 'full' | 'standard' | 'essential' | 'ultra-compact'; // Tool filtering mode
+  lite?: boolean; // Lite mode preset: enables ultra-compact tools, essential tools, and lower temperature
 }
 
 // Anthropic API Types

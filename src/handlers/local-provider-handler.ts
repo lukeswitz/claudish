@@ -12,8 +12,8 @@ import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager } from "../middleware/index.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
-import { writeFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readdirSync, statSync, unlinkSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "undici";
 import {
@@ -32,6 +32,20 @@ const localProviderAgent = new Agent({
   keepAliveTimeout: 30000, // 30 seconds keepalive
   keepAliveMaxTimeout: 600000,
 });
+
+// Model metadata cache structure
+interface ModelMetadataCache {
+  [modelId: string]: {
+    contextWindow: number;
+    timestamp: number;
+    ttl: number; // Time to live in milliseconds
+  };
+}
+
+// Cache file path
+const CACHE_DIR = join(homedir(), '.config', 'claudish');
+const CACHE_FILE = join(CACHE_DIR, 'model-cache.json');
+const DEFAULT_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days for local models
 
 export interface LocalProviderOptions {
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size
@@ -57,6 +71,77 @@ export class LocalProviderHandler implements ModelHandler {
   private static healthCheckCache = new Map<string, { healthy: boolean; timestamp: number }>();
   private static HEALTH_CHECK_TTL = 60000; // 60 seconds
 
+  /**
+   * Load model metadata from cache file
+   */
+  private static loadCachedMetadata(modelId: string): number | null {
+    try {
+      if (!existsSync(CACHE_FILE)) {
+        return null;
+      }
+
+      const cacheData = readFileSync(CACHE_FILE, 'utf-8');
+      const cache: ModelMetadataCache = JSON.parse(cacheData);
+      const entry = cache[modelId];
+
+      if (!entry) {
+        return null;
+      }
+
+      // Check if cache entry is still valid
+      const now = Date.now();
+      if (now - entry.timestamp < entry.ttl) {
+        return entry.contextWindow;
+      }
+
+      // Cache expired
+      return null;
+    } catch (e) {
+      // Ignore cache read errors
+      return null;
+    }
+  }
+
+  /**
+   * Save model metadata to cache file
+   */
+  private static saveCachedMetadata(modelId: string, contextWindow: number): void {
+    try {
+      // Ensure cache directory exists
+      if (!existsSync(CACHE_DIR)) {
+        mkdirSync(CACHE_DIR, { recursive: true, mode: 0o700 });
+      }
+
+      // Load existing cache or create new
+      let cache: ModelMetadataCache = {};
+      if (existsSync(CACHE_FILE)) {
+        try {
+          const cacheData = readFileSync(CACHE_FILE, 'utf-8');
+          cache = JSON.parse(cacheData);
+        } catch {
+          // Invalid cache file, start fresh
+          cache = {};
+        }
+      }
+
+      // Update cache entry
+      cache[modelId] = {
+        contextWindow,
+        timestamp: Date.now(),
+        ttl: DEFAULT_CACHE_TTL,
+      };
+
+      // Write cache file with restricted permissions
+      writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), {
+        encoding: 'utf-8',
+        mode: 0o600, // Owner read/write only
+      });
+    } catch (e) {
+      // Ignore cache write errors (not critical)
+      log(`[LocalProvider] Failed to save model cache: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   constructor(provider: LocalProvider, modelName: string, port: number, options: LocalProviderOptions = {}) {
     this.provider = provider;
     this.modelName = modelName;
@@ -68,6 +153,11 @@ export class LocalProviderHandler implements ModelHandler {
       log(`[LocalProvider:${provider.name}] Middleware init error: ${err}`);
     });
 
+    // Priority order for context window:
+    // 1. Environment variable (highest priority - user override)
+    // 2. Cached metadata (from previous session)
+    // 3. Default value (32K, will be updated on first request)
+
     // Check for env var override of context window (useful when API doesn't expose it)
     const envContextWindow = process.env.CLAUDISH_CONTEXT_WINDOW;
     if (envContextWindow) {
@@ -75,6 +165,13 @@ export class LocalProviderHandler implements ModelHandler {
       if (!isNaN(parsed) && parsed > 0) {
         this.contextWindow = parsed;
         log(`[LocalProvider:${provider.name}] Context window from env: ${this.contextWindow}`);
+      }
+    } else {
+      // Try to load from cache
+      const cachedContextWindow = LocalProviderHandler.loadCachedMetadata(this.getCacheKey());
+      if (cachedContextWindow) {
+        this.contextWindow = cachedContextWindow;
+        log(`[LocalProvider:${provider.name}] Context window from cache: ${this.contextWindow} (saved within 7 days)`);
       }
     }
 
@@ -86,6 +183,14 @@ export class LocalProviderHandler implements ModelHandler {
     if (options.summarizeTools) {
       log(`[LocalProvider:${provider.name}] Tool summarization enabled`);
     }
+  }
+
+  /**
+   * Generate cache key for this model
+   * Format: provider:modelName (e.g., "ollama:qwen2.5-coder:7b")
+   */
+  private getCacheKey(): string {
+    return `${this.provider.name}:${this.modelName}`;
   }
 
   /**
@@ -239,6 +344,8 @@ export class LocalProviderHandler implements ModelHandler {
         }
         if (ctxFromInfo || ctxFromParams) {
           log(`[LocalProvider:${this.provider.name}] Context window: ${this.contextWindow}`);
+          // Save to cache for future sessions
+          LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
         }
       }
     } catch (e) {
@@ -277,6 +384,8 @@ export class LocalProviderHandler implements ModelHandler {
           if (ctxLength && typeof ctxLength === "number") {
             this.contextWindow = ctxLength;
             log(`[LocalProvider:lmstudio] Context window from model: ${this.contextWindow}`);
+            // Save to cache for future sessions
+            LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
             return;
           }
         }
@@ -285,11 +394,15 @@ export class LocalProviderHandler implements ModelHandler {
         // Use a reasonable default for modern models
         this.contextWindow = 32768;
         log(`[LocalProvider:lmstudio] Using default context window: ${this.contextWindow}`);
+        // Save default to cache
+        LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
       }
     } catch (e: any) {
       // Use default - LM Studio typically supports at least 4K
       this.contextWindow = 32768;
       log(`[LocalProvider:lmstudio] Failed to fetch model info: ${e?.message || e}. Using default: ${this.contextWindow}`);
+      // Save default to cache
+      LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
     }
   }
 
@@ -381,62 +494,19 @@ export class LocalProviderHandler implements ModelHandler {
       log(`[LocalProvider:${this.provider.name}] Tools processed: ${tools.length} tools, mode=${toolMode}`);
     }
 
-    // Add guidance to system prompt for local models
+    // Add compact guidance to system prompt for local models (optimized to ~200 tokens)
     if (messages.length > 0 && messages[0].role === "system") {
+      // Check if this is a Qwen model that needs explicit tool format instructions
+      const isQwen = target.toLowerCase().includes("qwen");
+
+      // Ultra-compact guidance (~200 tokens vs original ~500 tokens)
       let guidance = `
 
-IMPORTANT INSTRUCTIONS FOR THIS MODEL:
-
-1. OUTPUT BEHAVIOR:
-- NEVER output your internal reasoning, thinking process, or chain-of-thought as visible text.
-- Only output your final response, actions, or tool calls.
-- Do NOT ramble or speculate about what the user might want.
-
-2. CONVERSATION HANDLING:
-- Always look back at the ORIGINAL user request in the conversation history.
-- When you receive results from a Task/agent you called, SYNTHESIZE those results and continue fulfilling the user's original request.
-- Do NOT ask "What would you like help with?" if there's already a user request in the conversation.
-- Only ask for clarification if the FIRST user message in the conversation is unclear.
-- After calling tools or agents, continue with the next step - don't restart or ask what to do.
-
-3. CRITICAL - AFTER TOOL RESULTS:
-- When you see tool results (like file lists, search results, or command output), ALWAYS continue working.
-- Analyze the results and take the next action toward completing the user's request.
-- If the user asked for "evaluation and suggestions", you MUST provide analysis and recommendations after seeing the data.
-- NEVER stop after just calling one tool - continue until you've fully addressed the user's request.
-- If you called a Glob/Search and got files, READ important files next, then ANALYZE, then SUGGEST improvements.`;
-
-      // Add tool calling guidance if tools are present
-      if (finalTools.length > 0) {
-        // Check if this is a Qwen model that needs explicit tool format instructions
-        const isQwen = target.toLowerCase().includes("qwen");
-
-        if (isQwen) {
-          guidance += `
-
-4. TOOL CALLING FORMAT (CRITICAL FOR QWEN):
-You MUST use proper OpenAI-style function calling. Do NOT output tool calls as XML text.
-When you want to call a tool, use the API's tool_calls mechanism, NOT text like <function=...>.
-The tool calls must be structured JSON in the API response, not XML in your text output.
-
-If you cannot use structured tool_calls, format as JSON:
-{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
-
-5. TOOL PARAMETER REQUIREMENTS:`;
-        } else {
-          guidance += `
-
-4. TOOL CALLING REQUIREMENTS:`;
-        }
-
-        guidance += `
-- When calling tools, you MUST include ALL required parameters. Incomplete tool calls will fail.
-- For Task: always include "description" (3-5 words), "prompt" (detailed instructions), and "subagent_type"
-- For Bash: always include "command" and "description"
-- For Read/Write/Edit: always include the full "file_path"
-- For Grep/Glob: always include "pattern"
-- Ensure your tool call JSON is complete with all required fields before submitting.`;
-      }
+CRITICAL INSTRUCTIONS:
+1. NO internal reasoning/thinking as visible text - only output final response or tool calls
+2. ALWAYS continue after tool results - analyze data and take next action toward user's request
+3. For tool calls: use OpenAI JSON format, NOT XML/text
+${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text format\n' : ''}${finalTools.length > 0 ? `${isQwen ? '5' : '4'}. Include ALL required parameters in tool calls (incomplete calls fail)` : ''}`;
 
       messages[0].content += guidance;
     }
@@ -502,8 +572,26 @@ If you cannot use structured tool_calls, format as JSON:
       };
     };
 
-    const samplingParams = getSamplingParams();
-    log(`[LocalProvider:${this.provider.name}] Using sampling params: temp=${samplingParams.temperature}, top_p=${samplingParams.top_p}, top_k=${samplingParams.top_k}`);
+    // Get model-specific defaults, then override with env vars if present
+    const defaultParams = getSamplingParams();
+
+    // Apply environment variable overrides (allows user customization)
+    const samplingParams = {
+      temperature: parseFloat(process.env.CLAUDISH_TEMPERATURE || String(defaultParams.temperature)),
+      top_p: parseFloat(process.env.CLAUDISH_TOP_P || String(defaultParams.top_p)),
+      top_k: parseInt(process.env.CLAUDISH_TOP_K || String(defaultParams.top_k), 10),
+      min_p: parseFloat(process.env.CLAUDISH_MIN_P || String(defaultParams.min_p)),
+      repetition_penalty: parseFloat(process.env.CLAUDISH_REP_PENALTY || process.env.CLAUDISH_REPETITION_PENALTY || String(defaultParams.repetition_penalty)),
+    };
+
+    // Log if env vars were used
+    const hasEnvOverrides = process.env.CLAUDISH_TEMPERATURE || process.env.CLAUDISH_TOP_P ||
+                            process.env.CLAUDISH_TOP_K || process.env.CLAUDISH_MIN_P ||
+                            process.env.CLAUDISH_REP_PENALTY || process.env.CLAUDISH_REPETITION_PENALTY;
+    if (hasEnvOverrides) {
+      log(`[LocalProvider:${this.provider.name}] Using env var overrides for sampling params`);
+    }
+    log(`[LocalProvider:${this.provider.name}] Sampling: temp=${samplingParams.temperature}, top_p=${samplingParams.top_p}, top_k=${samplingParams.top_k}, rep=${samplingParams.repetition_penalty}`);
 
     // For local providers, ensure max_tokens is set to a reasonable value
     // Some local providers have very low defaults or ignore Claude's max_tokens

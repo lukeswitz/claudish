@@ -214,6 +214,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Ultra-compact tool descriptions + filtering
       config.toolMode = 'ultra-compact';
       config.summarizeTools = true;
+    } else if (arg === "--lite") {
+      // Lite mode preset: optimizations for low-resource models
+      config.lite = true;
+    } else if (arg === "--check-system") {
+      // Show system resources and recommended models
+      const { printRecommendedModels } = await import("./system-info.js");
+      await printRecommendedModels();
+      process.exit(0);
     } else {
       // All remaining args go to claude CLI
       config.claudeArgs = args.slice(i);
@@ -228,6 +236,19 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Exception: --stdin mode reads prompt from stdin, so don't default to interactive
   if ((!config.claudeArgs || config.claudeArgs.length === 0) && !config.stdin) {
     config.interactive = true;
+  }
+
+  // Apply lite mode preset (optimizations for low-resource models)
+  if (config.lite) {
+    config.summarizeTools = true;
+    config.toolMode = 'essential'; // Use only 7 core tools
+    // Set temperature to 0.5 for efficiency (only if not already set)
+    if (!process.env.CLAUDISH_TEMPERATURE) {
+      process.env.CLAUDISH_TEMPERATURE = '0.5';
+    }
+    if (!config.quiet) {
+      console.log('[claudish] Lite mode enabled: essential tools, compact descriptions, temp=0.5');
+    }
   }
 
   // Handle API keys based on mode
@@ -967,6 +988,14 @@ OPTIONS:
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
   --init                   Install Claudish skill in current project (.claude/skills/)
 
+LOCAL MODEL OPTIMIZATIONS:
+  --check-system           Show system resources and recommended models for local LLMs
+  --lite                   Lite mode preset: essential tools, compact descriptions, temp=0.5
+  --summarize-tools        Summarize tool descriptions (reduce prompt size)
+  --essential-tools        Use only 7 core tools (Read, Write, Edit, Bash, Grep, Glob, Task)
+  --standard-tools         Use 12 common tools (essential + Web, Todo, Ask)
+  --ultra-compact-tools    Ultra-compact tool descriptions + essential mode
+
 PROFILE MANAGEMENT:
   claudish init            Setup wizard - create config and first profile
   claudish profile list    List all profiles
@@ -1081,6 +1110,13 @@ LOCAL MODELS (Ollama, LM Studio, vLLM):
 
   # Use local LM Studio model
   claudish --model lmstudio/qwen2.5-coder "write tests"
+
+  # Check system resources and get model recommendations
+  claudish --check-system
+
+  # Lite mode for low-resource models (8K-16K context)
+  claudish --lite --model ollama/qwen2.5-coder:7b "implement feature"
+  # Equivalent to: --essential-tools --summarize-tools + CLAUDISH_TEMPERATURE=0.5
 
   # Use any OpenAI-compatible endpoint (URL syntax)
   claudish --model "http://localhost:11434/llama3.2" "task"

@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { ENV } from "./config.js";
@@ -10,6 +10,35 @@ import type { ClaudishConfig } from "./types.js";
 // (module-level constants can be inlined by bundlers at build time)
 function isWindows(): boolean {
   return process.platform === "win32";
+}
+
+/**
+ * Clean up stale status scripts and settings files older than 24 hours
+ * Prevents accumulation of temporary files from crashed/interrupted sessions
+ */
+function cleanupStaleFiles(): void {
+  try {
+    const tempDir = tmpdir();
+    const files = readdirSync(tempDir);
+    const staleThreshold = Date.now() - 86400000; // 24 hours in milliseconds
+
+    for (const file of files) {
+      // Clean up both status scripts (.js) and settings files (.json)
+      if (file.startsWith('claudish-status-') || file.startsWith('claudish-settings-')) {
+        const filePath = join(tempDir, file);
+        try {
+          const stats = statSync(filePath);
+          if (stats.mtimeMs < staleThreshold) {
+            unlinkSync(filePath);
+          }
+        } catch {
+          // Ignore errors (file may have been deleted already)
+        }
+      }
+    }
+  } catch {
+    // Ignore errors (tmpdir may not be readable)
+  }
 }
 
 /**
@@ -123,6 +152,9 @@ export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string
 ): Promise<number> {
+  // Clean up stale temporary files from previous sessions
+  cleanupStaleFiles();
+
   // Use actual OpenRouter model ID (no translation)
   // This ensures ANY model works, not just our shortlist
   const modelId = config.model || "unknown";

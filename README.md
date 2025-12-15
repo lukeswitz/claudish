@@ -45,6 +45,51 @@ bun install -g claudish
 - [Claude Code](https://claude.com/claude-code) - Claude CLI must be installed
 - [OpenRouter API Key](https://openrouter.ai/keys) - Free tier available
 
+### Secure Setup (Recommended)
+
+For production use, store credentials in a secure file instead of shell environment:
+
+```bash
+# Create secure credential directory
+mkdir -p ~/.config/claudish
+chmod 700 ~/.config/claudish
+
+# Create credential file with restricted permissions
+cat > ~/.config/claudish/credentials << 'EOF'
+OPENROUTER_API_KEY=sk-or-v1-your-actual-key
+ANTHROPIC_API_KEY=sk-ant-api03-placeholder
+EOF
+
+# Restrict file permissions (owner read/write only)
+chmod 600 ~/.config/claudish/credentials
+
+# Load credentials in your shell profile
+echo 'export $(grep -v "^#" ~/.config/claudish/credentials | xargs)' >> ~/.bashrc
+# Or for zsh:
+echo 'export $(grep -v "^#" ~/.config/claudish/credentials | xargs)' >> ~/.zshrc
+
+# Reload shell
+source ~/.bashrc  # or source ~/.zshrc
+```
+
+**Security Benefits:**
+- ✅ Credentials stored with `600` permissions (owner-only read/write)
+- ✅ Not exposed in shell history
+- ✅ Easy to rotate keys (edit one file)
+- ✅ Works across all terminals
+- ✅ Set spending limits at [OpenRouter Keys](https://openrouter.ai/keys)
+
+**Alternative: Quick Setup (Less Secure)**
+
+For testing or development, you can use environment variables directly:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-your-key
+export ANTHROPIC_API_KEY=sk-ant-api03-placeholder
+```
+
+⚠️ **Warning:** This exposes keys in shell history and process environment. Use secure file method for production.
+
 ### Other Install Options
 
 **Use without installing:**
@@ -101,7 +146,8 @@ claudish
 ### Option 2: With Environment Variables
 
 ```bash
-# Set up environment
+# If you followed "Secure Setup", credentials are already loaded
+# Otherwise, set them manually:
 export OPENROUTER_API_KEY=sk-or-v1-...
 export ANTHROPIC_API_KEY=sk-ant-api03-placeholder
 
@@ -112,7 +158,7 @@ claudish "implement user authentication"
 claudish --model openai/gpt-5-codex "add tests"
 ```
 
-**Note:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it. This makes first-time usage super simple!
+**Note:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it. For best security, use the [Secure Setup](#secure-setup-recommended) method above.
 
 ## AI Agent Usage
 
@@ -225,6 +271,13 @@ claudish [OPTIONS] <claude-args...>
 | `--init` | Install Claudish skill in current project | - |
 | `--help-ai` | Show AI agent usage guide | - |
 | `-h, --help` | Show help message | - |
+| **Local Model Optimizations** | | |
+| `--check-system` | Show system resources & recommended models | - |
+| `--lite` | Lite mode preset (essential tools + temp=0.5) | `false` |
+| `--summarize-tools` | Summarize tool descriptions | `false` |
+| `--essential-tools` | Use only 7 core tools | `false` |
+| `--standard-tools` | Use 12 common tools | `false` |
+| `--ultra-compact-tools` | Ultra-compact descriptions + essential | `false` |
 
 ### Environment Variables
 
@@ -235,6 +288,14 @@ claudish [OPTIONS] <claude-args...>
 | `CLAUDISH_MODEL` | Default model to use | ❌ No |
 | `CLAUDISH_PORT` | Default proxy port | ❌ No |
 | `CLAUDISH_ACTIVE_MODEL_NAME` | Automatically set by claudish to show active model in status line (read-only) | ❌ No |
+| **Local Model Tuning** | | |
+| `CLAUDISH_TEMPERATURE` | Override model temperature (0.0-2.0) | ❌ No |
+| `CLAUDISH_TOP_P` | Override top-p sampling (0.0-1.0) | ❌ No |
+| `CLAUDISH_TOP_K` | Override top-k sampling (1-100) | ❌ No |
+| `CLAUDISH_MIN_P` | Override min-p sampling (0.0-1.0) | ❌ No |
+| `CLAUDISH_REP_PENALTY` | Override repetition penalty (1.0-2.0) | ❌ No |
+| `CLAUDISH_CONTEXT_WINDOW` | Override context window size (tokens) | ❌ No |
+| `CLAUDISH_OLLAMA_KEEP_ALIVE` | Ollama: Keep model in memory (e.g., "30m") | ❌ No (default: 30m) |
 
 **Important Notes:**
 - **NEW in v1.3.0:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it
@@ -911,18 +972,16 @@ npm install -g claude-code
 
 ### "OPENROUTER_API_KEY environment variable is required"
 
-Set your API key:
+**Recommended:** Use the [Secure Setup](#secure-setup-recommended) method to store credentials safely.
+
+**Quick fix:** Set your API key temporarily:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-v1-...
+export ANTHROPIC_API_KEY=sk-ant-api03-placeholder
 ```
 
-Or add to your shell profile (`~/.zshrc`, `~/.bashrc`):
-
-```bash
-echo 'export OPENROUTER_API_KEY=sk-or-v1-...' >> ~/.zshrc
-source ~/.zshrc
-```
+⚠️ **Warning:** This exposes keys in shell history. For production use, follow the [Secure Setup](#secure-setup-recommended) guide.
 
 ### "No available ports found"
 
