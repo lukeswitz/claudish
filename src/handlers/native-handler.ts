@@ -24,7 +24,7 @@ export class NativeHandler implements ModelHandler {
       log("[Native] WARNING: No API key found in headers!");
       log("[Native] Looking for: x-api-key or authorization header");
     } else {
-      log(`API Key found: ${maskCredential(extractedApiKey)}`);
+      log("API Key found: [REDACTED]");
     }
 
     log(`Request body (Model: ${target}):`);
