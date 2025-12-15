@@ -66,6 +66,7 @@ export class LocalProviderHandler implements ModelHandler {
   private options: LocalProviderOptions;
   private warnedContext80 = false;
   private warnedContext90 = false;
+  private pruningEnabled = false; // Track if pruning has been triggered
 
   // Static health check cache (shared across all instances)
   private static healthCheckCache = new Map<string, { healthy: boolean; timestamp: number }>();
@@ -456,6 +457,116 @@ export class LocalProviderHandler implements ModelHandler {
     }
   }
 
+  /**
+   * Prune conversation history when context usage is high
+   * Preserves: system messages, first user message, recent messages, and tool call/result pairs
+   */
+  private pruneConversationHistory(messages: any[]): { pruned: any[]; removedCount: number } {
+    if (messages.length <= 5) {
+      // Too few messages to prune meaningfully
+      return { pruned: messages, removedCount: 0 };
+    }
+
+    const preserved: any[] = [];
+    const toRemove: number[] = [];
+
+    // 1. Preserve system message (first message if system role)
+    if (messages.length > 0 && messages[0].role === "system") {
+      preserved.push(messages[0]);
+    }
+
+    // Find first user message index (after system message if present)
+    const firstUserIdx = messages.findIndex((m, i) =>
+      m.role === "user" && (i === 0 || messages[0].role !== "system" || i > 0)
+    );
+
+    // 2. Preserve first user message
+    if (firstUserIdx !== -1 && firstUserIdx > 0) {
+      preserved.push({ ...messages[firstUserIdx], __preservedIndex: firstUserIdx });
+    }
+
+    // 3. Preserve recent messages (last 12 messages to keep good context)
+    const recentStartIdx = Math.max(0, messages.length - 12);
+    const recentMessages = messages.slice(recentStartIdx).map((m, i) => ({
+      ...m,
+      __preservedIndex: recentStartIdx + i
+    }));
+
+    // 4. Identify middle section to prune (between first user msg and recent msgs)
+    const middleStartIdx = firstUserIdx !== -1 ? firstUserIdx + 1 : (messages[0].role === "system" ? 1 : 0);
+    const middleEndIdx = recentStartIdx;
+
+    // Build a list of indices that form tool call/result pairs in the middle section
+    const preservedPairs = new Set<number>();
+
+    for (let i = middleStartIdx; i < middleEndIdx; i++) {
+      const msg = messages[i];
+
+      // If assistant message has tool_calls, preserve it and following tool messages
+      if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+        preservedPairs.add(i);
+
+        // Find corresponding tool result messages
+        const toolCallIds = new Set(msg.tool_calls.map((tc: any) => tc.id));
+
+        // Look ahead for tool results (usually immediately following)
+        for (let j = i + 1; j < middleEndIdx && j < i + 10; j++) {
+          const nextMsg = messages[j];
+          if (nextMsg.role === "tool" && toolCallIds.has(nextMsg.tool_call_id)) {
+            preservedPairs.add(j);
+          } else if (nextMsg.role === "assistant" || nextMsg.role === "user") {
+            // Stop looking when we hit next turn
+            break;
+          }
+        }
+      }
+    }
+
+    // Sample some preserved tool pairs to keep conversation continuity (every 3rd pair)
+    const pairIndices = Array.from(preservedPairs).sort((a, b) => a - b);
+    const sampledPairs = new Set<number>();
+    for (let i = 0; i < pairIndices.length; i += 3) {
+      // Keep first pair in each group of 3
+      sampledPairs.add(pairIndices[i]);
+      // Find associated tool results
+      const msg = messages[pairIndices[i]];
+      if (msg.role === "assistant" && msg.tool_calls) {
+        const toolCallIds = new Set(msg.tool_calls.map((tc: any) => tc.id));
+        for (let j = pairIndices[i] + 1; j < middleEndIdx; j++) {
+          const nextMsg = messages[j];
+          if (nextMsg.role === "tool" && toolCallIds.has(nextMsg.tool_call_id)) {
+            sampledPairs.add(j);
+          }
+        }
+      }
+    }
+
+    // Mark messages for removal (middle section, excluding sampled pairs)
+    for (let i = middleStartIdx; i < middleEndIdx; i++) {
+      if (!sampledPairs.has(i)) {
+        toRemove.push(i);
+      }
+    }
+
+    // Build final pruned array
+    const preservedIndices = new Set([
+      ...(messages[0]?.role === "system" ? [0] : []),
+      ...(firstUserIdx > 0 ? [firstUserIdx] : []),
+      ...Array.from(sampledPairs),
+      ...Array.from({ length: messages.length - recentStartIdx }, (_, i) => recentStartIdx + i)
+    ]);
+
+    const pruned = messages.filter((_, idx) => preservedIndices.has(idx));
+    const removedCount = messages.length - pruned.length;
+
+    if (removedCount > 0) {
+      log(`[LocalProvider] Pruned conversation history: ${messages.length} → ${pruned.length} messages (removed ${removedCount})`);
+      log(`[LocalProvider] Preserved: system msg, first user msg, ${sampledPairs.size} sampled interactions, ${messages.length - recentStartIdx} recent msgs`);
+    }
+
+    return { pruned, removedCount };
+  }
+
   async handle(c: Context, payload: any): Promise<Response> {
     const target = this.modelName;
 
@@ -481,9 +592,30 @@ export class LocalProviderHandler implements ModelHandler {
     // Use simple format for providers that don't support complex message structures
     // MLX doesn't handle array content or tool role messages
     const useSimpleFormat = this.provider.name === "mlx";
-    const messages = convertMessagesToOpenAI(claudeRequest, target, filterIdentity, useSimpleFormat);
+    let messages = convertMessagesToOpenAI(claudeRequest, target, filterIdentity, useSimpleFormat);
     const toolMode = this.options.toolMode || (this.options.summarizeTools ? 'standard' : 'full');
     const tools = convertToolsToOpenAI(claudeRequest, this.options.summarizeTools, toolMode);
+
+    // Check for context pruning (when context usage > 80%)
+    const sessionTotal = this.sessionInputTokens + this.sessionOutputTokens;
+    const contextUsagePercent = this.contextWindow > 0
+      ? ((sessionTotal / this.contextWindow) * 100)
+      : 0;
+
+    let pruningOccurred = false;
+    if (contextUsagePercent > 80 && !this.pruningEnabled && messages.length > 5) {
+      log(`[LocalProvider] Context usage at ${contextUsagePercent.toFixed(1)}% - triggering conversation pruning`);
+      const result = this.pruneConversationHistory(messages);
+      if (result.removedCount > 0) {
+        messages = result.pruned;
+        pruningOccurred = true;
+        this.pruningEnabled = true;
+
+        // Estimate token savings (rough: ~150 tokens per message on average)
+        const estimatedSavings = result.removedCount * 150;
+        log(`[LocalProvider] Pruning complete - estimated ${estimatedSavings} tokens saved`);
+      }
+    }
 
     // Check capability: strip tools if not supported
     const finalTools = this.provider.capabilities.supportsTools ? tools : [];
@@ -499,6 +631,11 @@ export class LocalProviderHandler implements ModelHandler {
       // Check if this is a Qwen model that needs explicit tool format instructions
       const isQwen = target.toLowerCase().includes("qwen");
 
+      // Add pruning notice if it occurred
+      const pruningNotice = pruningOccurred
+        ? `\n\nNOTE: Conversation history has been automatically pruned to manage context window usage (${contextUsagePercent.toFixed(0)}% full). Some older messages have been removed to prevent context overflow. Recent context and important tool interactions have been preserved.`
+        : '';
+
       // Ultra-compact guidance (~200 tokens vs original ~500 tokens)
       let guidance = `
 
@@ -506,7 +643,7 @@ CRITICAL INSTRUCTIONS:
 1. NO internal reasoning/thinking as visible text - only output final response or tool calls
 2. ALWAYS continue after tool results - analyze data and take next action toward user's request
 3. For tool calls: use OpenAI JSON format, NOT XML/text
-${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text format\n' : ''}${finalTools.length > 0 ? `${isQwen ? '5' : '4'}. Include ALL required parameters in tool calls (incomplete calls fail)` : ''}`;
+${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text format\n' : ''}${finalTools.length > 0 ? `${isQwen ? '5' : '4'}. Include ALL required parameters in tool calls (incomplete calls fail)` : ''}${pruningNotice}`;
 
       messages[0].content += guidance;
     }
