@@ -163,7 +163,7 @@ export async function createProxyServer(
   const actualPort = typeof addr === 'object' && addr?.port ? addr.port : port;
   if (actualPort !== port) port = actualPort;
 
-  log(`[Proxy] Server started on port ${port}`);
+  log(`[Proxy] Server listening on http://127.0.0.1:${port} (localhost only)`);
 
   return {
       port,

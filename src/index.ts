@@ -37,6 +37,7 @@ async function runCli() {
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdates } = await import("./update-checker.js");
+  const { validateDependencies, checkCredentialSecurity, secureLogDirectory } = await import("./security.js");
 
   /**
    * Read content from stdin
@@ -55,6 +56,15 @@ async function runCli() {
 
     // Initialize logger if debug mode with specified log level
     initLogger(cliConfig.debug, cliConfig.logLevel);
+
+    // Security checks on startup
+    await validateDependencies();
+    checkCredentialSecurity();
+
+    // Secure log directory before any logging
+    if (cliConfig.debug || cliConfig.monitor) {
+      secureLogDirectory();
+    }
 
     // Show debug log location if enabled
     if (cliConfig.debug && !cliConfig.quiet) {

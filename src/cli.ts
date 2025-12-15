@@ -294,7 +294,28 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     }
   }
 
+  // Security warnings
+  displaySecurityWarnings(config);
+
   return config as ClaudishConfig;
+}
+
+/**
+ * Display security warnings based on configuration
+ */
+function displaySecurityWarnings(config: Partial<ClaudishConfig>): void {
+  // Warn on dangerous flags
+  if (config.dangerous) {
+    console.warn('[claudish] ⚠️  WARNING: Sandbox disabled. Review all operations carefully.');
+  }
+
+  if (config.monitor && config.debug) {
+    console.warn('[claudish] ⚠️  WARNING: Monitor + debug logs contain credentials. Secure logs/ directory.');
+  }
+
+  if (config.autoApprove && !config.quiet) {
+    console.log('[claudish] ℹ️  Auto-approve enabled. Use --no-auto-approve for manual review.');
+  }
 }
 
 /**

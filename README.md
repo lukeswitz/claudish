@@ -858,6 +858,46 @@ bun run install:global
 claudish "your task"
 ```
 
+## Security
+
+### API Key Protection
+
+**Secure Configuration:**
+```bash
+# Create secure credential file
+mkdir -p ~/.config/claudish
+echo "OPENROUTER_API_KEY=sk-or-v1-..." > ~/.config/claudish/credentials
+echo "ANTHROPIC_API_KEY=sk-ant-api03-placeholder" >> ~/.config/claudish/credentials
+chmod 600 ~/.config/claudish/credentials
+
+# Load in shell profile
+echo 'export $(grep -v "^#" ~/.config/claudish/credentials | xargs)' >> ~/.bashrc
+```
+
+**Credit Limits:** Set spending limits on OpenRouter keys at https://openrouter.ai/keys
+
+### Risk Warnings
+
+- `--auto-approve`: Enabled by default. Use `--no-auto-approve` for sensitive operations
+- `--dangerous`: Disables Claude Code sandbox. Understand implications before use
+- `--monitor --debug`: Logs contain credentials. Never use on shared systems
+- Log files (`logs/claudish_*.log`): May contain sensitive data. Secure with `chmod 700 logs/`
+
+### Dependency Security
+```bash
+# Verify Hono version ≥4.10.6 (critical security fixes)
+npm ls hono
+
+# Audit dependencies
+npm audit
+```
+
+### Network Security
+
+- Proxy binds to `127.0.0.1` only (localhost)
+- No authentication on proxy endpoint (localhost trust model)
+- Not suitable for multi-user systems without isolation
+
 ## Troubleshooting
 
 ### "Claude Code CLI is not installed"
