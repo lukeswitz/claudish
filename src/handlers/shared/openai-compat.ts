@@ -218,8 +218,14 @@ function summarizeToolDescription(name: string, description: string): string {
 
   // Remove markdown, examples, and extra whitespace
   let clean = description
-    .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-    .replace(/<[^>]+>/g, '') // Remove HTML/XML tags
+    .replace(/```[\s\S]*?```/g, ''); // Remove code blocks
+  // Remove HTML/XML tags (repeatedly, to sanitize nested/partial tags)
+  let prev;
+  do {
+    prev = clean;
+    clean = clean.replace(/<[^>]+>/g, '');
+  } while (clean !== prev);
+  clean = clean
     .replace(/\n+/g, ' ') // Replace newlines with spaces
     .replace(/\s+/g, ' ') // Collapse whitespace
     .trim();
