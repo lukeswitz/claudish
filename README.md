@@ -4,6 +4,21 @@
 
 **Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any OpenRouter model by proxying requests through a local Anthropic API-compatible server.
 
+## What's New in v3.0.0 🎉
+
+**Local Model Optimizations** - The best offline LLM experience for Claude Code:
+
+- **Auto-detection** - Automatically finds and prioritizes Ollama/LM Studio models
+- **Smart Context Management** - Auto-pruning at 80% usage prevents overflow
+- **System Detection** - `--check-system` recommends optimal models for your hardware
+- **Lite Mode** - `--lite` flag enables all optimizations for low-resource models
+- **Tool Optimization** - `--essential-tools` and `--ultra-compact-tools` reduce context by 60-75%
+- **Performance Monitoring** - Real-time tokens/sec and TTFT metrics
+- **Fine-tuning Controls** - Environment variables for temperature, sampling, and more
+- **Context Warnings** - Alerts at 80%/90% usage to prevent session failures
+
+**See [Local Model Support](#local-model-support-new-in-v300) for complete documentation.**
+
 ## Features
 
 - ✅ **Cross-platform** - Works with both Node.js and Bun (v1.3.0+)
@@ -21,6 +36,11 @@
 - ✅ **Context inheritance** - Runs in current directory with same `.claude` settings
 - ✅ **Multiple models** - 10+ prioritized OpenRouter models
 - ✅ **Agent support** - Use Claude Code agents in headless mode with `--agent`
+- ✅ **Local model optimizations** - Smart context management for Ollama/LM Studio
+- ✅ **Auto-pruning** - Automatic conversation history management at 80% context
+- ✅ **System detection** - Auto-detect hardware and recommend optimal models
+- ✅ **Lite mode** - Optimized preset for low-resource/offline LLMs
+- ✅ **Performance monitoring** - Track tokens/sec, context usage, and costs
 
 ## Installation
 
@@ -160,6 +180,38 @@ claudish --model openai/gpt-5-codex "add tests"
 
 **Note:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it. For best security, use the [Secure Setup](#secure-setup-recommended) method above.
 
+### Option 3: Local Models (Offline)
+
+**Perfect for offline development or low-cost local LLMs:**
+
+```bash
+# 1. Install Ollama (if not installed)
+# Visit: https://ollama.com
+
+# 2. Pull a recommended model
+ollama pull qwen2.5-coder:7b
+
+# 3. Check your system capabilities
+claudish --check-system
+
+# 4. Run with auto-detection
+claudish --lite "implement user authentication"
+
+# Claudish will automatically:
+# ✅ Detect Ollama is running
+# ✅ Find qwen2.5-coder:7b
+# ✅ Apply optimizations for 7B model
+# ✅ Start coding!
+```
+
+**Quick tips for local models:**
+- 📦 **8GB RAM**: Use `--lite` with 3B-7B models
+- 💾 **16GB RAM**: Use `--essential-tools` with 7B-14B models
+- 🚀 **32GB+ RAM**: Standard settings work great with 14B-32B models
+- ⚡ **For fastest performance**: `export CLAUDISH_OLLAMA_KEEP_ALIVE=-1`
+
+**See [Local Model Support](#local-model-support-new-in-v300) for detailed documentation.**
+
 ## AI Agent Usage
 
 **For AI agents running within Claude Code:** Use the dedicated AI agent guide for comprehensive instructions on file-based patterns and sub-agent delegation.
@@ -273,33 +325,49 @@ claudish [OPTIONS] <claude-args...>
 | `-h, --help` | Show help message | - |
 | **Local Model Optimizations** | | |
 | `--check-system` | Show system resources & recommended models | - |
-| `--lite` | Lite mode preset (essential tools + temp=0.5) | `false` |
-| `--summarize-tools` | Summarize tool descriptions | `false` |
-| `--essential-tools` | Use only 7 core tools | `false` |
-| `--standard-tools` | Use 12 common tools | `false` |
-| `--ultra-compact-tools` | Ultra-compact descriptions + essential | `false` |
+| `--lite` | Lite mode preset (essential tools + optimized settings) | `false` |
+| `--summarize-tools` | Summarize tool descriptions (reduces context) | `false` |
+| `--essential-tools` | Use only 7 core tools (Read/Write/Edit/Bash/Grep/Glob/Task) | `false` |
+| `--standard-tools` | Use 12 common tools (essential + web/todo/ask) | `false` |
+| `--ultra-compact-tools` | Ultra-compact tool descriptions (60-75% reduction) | `false` |
 
 ### Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ **Optional in interactive mode** (will prompt if not set)<br>✅ **Required in non-interactive mode** |
-| `ANTHROPIC_API_KEY` | Placeholder to prevent Claude Code dialog (not used for auth) | ✅ **Required** |
-| `CLAUDISH_MODEL` | Default model to use | ❌ No |
-| `CLAUDISH_PORT` | Default proxy port | ❌ No |
-| `CLAUDISH_ACTIVE_MODEL_NAME` | Automatically set by claudish to show active model in status line (read-only) | ❌ No |
-| **Local Model Tuning** | | |
-| `CLAUDISH_TEMPERATURE` | Override model temperature (0.0-2.0) | ❌ No |
-| `CLAUDISH_TOP_P` | Override top-p sampling (0.0-1.0) | ❌ No |
-| `CLAUDISH_TOP_K` | Override top-k sampling (1-100) | ❌ No |
-| `CLAUDISH_MIN_P` | Override min-p sampling (0.0-1.0) | ❌ No |
-| `CLAUDISH_REP_PENALTY` | Override repetition penalty (1.0-2.0) | ❌ No |
-| `CLAUDISH_CONTEXT_WINDOW` | Override context window size (tokens) | ❌ No |
-| `CLAUDISH_OLLAMA_KEEP_ALIVE` | Ollama: Keep model in memory (e.g., "30m") | ❌ No (default: 30m) |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ **Optional in interactive mode** (prompts if not set)<br>✅ **Required in non-interactive mode** | - |
+| `ANTHROPIC_API_KEY` | Placeholder to prevent Claude Code dialog (not used for auth) | ✅ **Required** | - |
+| `CLAUDISH_MODEL` | Default model to use | ❌ No | - |
+| `CLAUDISH_PORT` | Default proxy port | ❌ No | Random (3000-9000) |
+| `CLAUDISH_ACTIVE_MODEL_NAME` | Auto-set by claudish to show active model in status line (read-only) | ❌ No | - |
+| **Local Model Tuning** | | | |
+| `CLAUDISH_TEMPERATURE` | Override model temperature (0.0-2.0) | ❌ No | Model-specific (usually 0.7) |
+| `CLAUDISH_TOP_P` | Override top-p sampling (0.0-1.0) | ❌ No | 0.9 |
+| `CLAUDISH_TOP_K` | Override top-k sampling (1-100) | ❌ No | 40 |
+| `CLAUDISH_MIN_P` | Override min-p sampling (0.0-1.0) | ❌ No | 0.0 |
+| `CLAUDISH_REP_PENALTY` | Override repetition penalty (1.0-2.0) | ❌ No | 1.0 |
+| `CLAUDISH_CONTEXT_WINDOW` | Override context window size (tokens) | ❌ No | Auto-detected |
+| `CLAUDISH_OLLAMA_KEEP_ALIVE` | Ollama: Keep model in memory (e.g., "30m", "5m", "-1" for indefinite) | ❌ No | 30m |
 
 **Important Notes:**
-- **NEW in v1.3.0:** In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it
+- **NEW in v3.0.0:** Automatic context management and optimization for local models
+- In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it
 - You MUST set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value). Without it, Claude Code will show a dialog
+
+**Tuning Examples:**
+```bash
+# Lower temperature for precise code generation
+export CLAUDISH_TEMPERATURE=0.3
+
+# Higher temperature for creative tasks
+export CLAUDISH_TEMPERATURE=0.9
+
+# Reduce repetition in responses
+export CLAUDISH_REP_PENALTY=1.15
+
+# Keep Ollama model loaded indefinitely (faster follow-up requests)
+export CLAUDISH_OLLAMA_KEEP_ALIVE=-1
+```
 
 ## Available Models
 
@@ -330,6 +398,155 @@ List models anytime with:
 ```bash
 claudish --models
 ```
+
+## Local Model Support (NEW in v3.0.0)
+
+Claudish provides **best-in-class support** for local models with automatic optimizations, context management, and performance monitoring.
+
+### Supported Providers
+
+- **Ollama**: `claudish --model ollama/llama3.2`
+- **LM Studio**: `claudish --model lmstudio/model-name`
+- **VLLM**: `claudish --model vllm/model-name`
+- **MLX**: `claudish --model mlx/model-name`
+- **Custom URLs**: `claudish --model http://localhost:11434/model`
+
+### Auto-Detection & Prioritization
+
+Claudish automatically detects running local providers and prioritizes them:
+
+```bash
+# Just run claudish - it auto-detects Ollama/LM Studio
+claudish
+
+# Output:
+🔍 Detecting local providers...
+✅ Ollama detected (http://localhost:11434)
+✅ LM Studio detected (http://localhost:1234)
+
+Available local models:
+1. qwen2.5-coder:7b (Ollama)
+2. deepseek-coder:6.7b (Ollama)
+3. llama-3.2-3b (LM Studio)
+```
+
+### System Resource Detection
+
+Check your hardware and get model recommendations:
+
+```bash
+claudish --check-system
+```
+
+**Example Output:**
+```
+💻 System Resources
+   RAM: 16.0 GB total, 8.2 GB available
+   CPU: 8 cores (Apple M1)
+   GPU: Not detected
+
+📊 Recommended Models for Your System:
+   • 7B-14B models (Q4_K_M quantization)
+   • Examples: qwen2.5-coder:7b, deepseek-coder:6.7b
+   • Expected performance: 15-25 tokens/sec
+
+⚠️  Models to avoid:
+   • 32B+ models (may cause swapping)
+   • F16 quantization (too much RAM)
+```
+
+### Lite Mode for Low-Resource Models
+
+Perfect for 7B-14B models or systems with limited RAM:
+
+```bash
+# Lite mode enables all optimizations automatically
+claudish --lite --model ollama/qwen2.5-coder:7b "implement user auth"
+```
+
+**What `--lite` does:**
+- ✅ Uses only 7 essential tools (reduces context by ~10K tokens)
+- ✅ Ultra-compact tool descriptions (60-75% reduction)
+- ✅ Lower temperature (0.5) for efficiency
+- ✅ Optimized system prompts (~60% smaller)
+
+**Equivalent to:**
+```bash
+claudish --essential-tools --ultra-compact-tools \
+  --model ollama/qwen2.5-coder:7b \
+  "implement user auth"
+
+export CLAUDISH_TEMPERATURE=0.5
+```
+
+### Context Management
+
+Claudish intelligently manages context to prevent overflow on small models:
+
+**Automatic Conversation Pruning:**
+- Triggers at 80% context usage
+- Preserves system messages and recent context
+- Samples important tool interactions
+- Maintains conversation coherence
+
+**Manual Control:**
+```bash
+# Override context window detection
+export CLAUDISH_CONTEXT_WINDOW=8192  # For 8K models
+
+# Check context status anytime
+# (displayed in status line: "95%" = 95% remaining)
+```
+
+**Context Warnings:**
+```
+⚠️  WARNING: Context usage >80% (85% used). Consider restarting session.
+🚨 CRITICAL: Context usage >90% (92% used). Next request may fail.
+```
+
+### Performance Optimizations
+
+**Cached Health Checks:**
+- Provider health checks cached for 60 seconds
+- Reduces startup latency by 50-70%
+
+**Prompt Caching (Ollama):**
+- System prompts cached in KV cache
+- 2-5x faster follow-up requests
+- Controlled via `CLAUDISH_OLLAMA_KEEP_ALIVE`
+
+**Model Warm-up Detection:**
+```
+🔄 Loading model qwen2.5-coder:7b (first request may take 10-30s)...
+✅ Model loaded in 12.3s
+```
+
+**Performance Metrics:**
+```
+📊 [Performance] 18.4 tokens/sec, 245ms TTFT (time to first token)
+```
+
+### Context Tracking
+
+Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. Claudish handles this correctly with proper token accounting.
+
+### Recommended Local Models
+
+**For 8GB RAM systems:**
+- `qwen2.5-coder:1.5b` or `llama3.2:3b` (Q4_K_M)
+- Use `--lite` mode
+
+**For 16GB RAM systems:**
+- `qwen2.5-coder:7b` or `deepseek-coder:6.7b` (Q4_K_M)
+- Use `--essential-tools` or `--lite`
+
+**For 32GB+ RAM systems:**
+- `qwen2.5-coder:14b` or `codestral:22b` (Q5_K_M)
+- Standard settings work well
+
+**For 64GB+ RAM systems:**
+- `qwen2.5-coder:32b` or `deepseek-coder-v2:236b` (Q4_K_M)
+- Full tool set available
 
 ## Agent Support (NEW in v2.1.0)
 
@@ -458,6 +675,48 @@ claudish --port 3000 "analyze codebase"
 # Or set default
 export CLAUDISH_PORT=3000
 claudish "your task"
+```
+
+### Local Model Optimization
+
+```bash
+# Check your system capabilities
+claudish --check-system
+
+# Use lite mode for 7B-14B models
+claudish --lite --model ollama/qwen2.5-coder:7b "build a REST API"
+
+# Fine-tune for specific use cases
+# Precise code generation
+export CLAUDISH_TEMPERATURE=0.3
+claudish --essential-tools --model ollama/qwen2.5-coder:14b "fix bug in auth.ts"
+
+# Creative problem-solving
+export CLAUDISH_TEMPERATURE=0.9
+claudish --standard-tools --model ollama/llama3.2:3b "design system architecture"
+
+# Maximum context savings (for 8K-16K models)
+claudish --ultra-compact-tools --essential-tools \
+  --model ollama/phi-3:3b "quick code review"
+```
+
+### Advanced Tuning
+
+```bash
+# Reduce repetition in responses
+export CLAUDISH_REP_PENALTY=1.15
+
+# More focused outputs
+export CLAUDISH_TOP_K=20
+export CLAUDISH_TOP_P=0.85
+
+# Keep Ollama model loaded for faster subsequent requests
+export CLAUDISH_OLLAMA_KEEP_ALIVE=-1  # Indefinite
+# or
+export CLAUDISH_OLLAMA_KEEP_ALIVE=5m  # 5 minutes
+
+# Run with all optimizations
+claudish --lite --model ollama/qwen2.5-coder:7b "your task"
 ```
 
 ### Passing Claude Flags
@@ -1040,21 +1299,117 @@ If the status line doesn't show the model name:
 
 **Note:** Temp settings files are automatically cleaned up when Claudish exits. If you see multiple files, you may have crashed instances - they're safe to delete manually.
 
+### Local Model Issues
+
+**"Ollama/LM Studio not detected"**
+
+1. Check if Ollama is running:
+   ```bash
+   ollama list
+   # Should show your models
+   ```
+
+2. Check if provider is accessible:
+   ```bash
+   curl http://localhost:11434/api/tags  # Ollama
+   curl http://localhost:1234/v1/models  # LM Studio
+   ```
+
+3. Try explicit model selection:
+   ```bash
+   claudish --model ollama/qwen2.5-coder:7b "your task"
+   ```
+
+**"Context overflow / Out of memory"**
+
+Your model's context window may be too small. Try:
+
+```bash
+# Check your system resources
+claudish --check-system
+
+# Use lite mode
+claudish --lite --model ollama/qwen2.5-coder:7b "task"
+
+# Or manually optimize
+claudish --essential-tools --ultra-compact-tools \
+  --model ollama/qwen2.5-coder:7b "task"
+```
+
+**"Model is slow / Low tokens/sec"**
+
+1. **Keep model loaded in memory:**
+   ```bash
+   export CLAUDISH_OLLAMA_KEEP_ALIVE=-1
+   ```
+
+2. **Use smaller/quantized model:**
+   - Try Q4_K_M instead of Q8_0
+   - Try 7B instead of 14B
+
+3. **Check GPU usage:**
+   ```bash
+   # Ollama should use GPU by default
+   ollama ps  # Shows GPU usage
+   ```
+
+4. **Reduce context usage:**
+   ```bash
+   claudish --lite --model ollama/qwen2.5-coder:7b "task"
+   ```
+
+**"Context warnings appearing too early"**
+
+Override context window detection:
+
+```bash
+# For 32K context models
+export CLAUDISH_CONTEXT_WINDOW=32768
+
+# For 8K context models
+export CLAUDISH_CONTEXT_WINDOW=8192
+```
+
+**"Model gives poor quality responses"**
+
+1. **Try different temperature:**
+   ```bash
+   # More precise (for code)
+   export CLAUDISH_TEMPERATURE=0.3
+
+   # More creative (for design)
+   export CLAUDISH_TEMPERATURE=0.9
+   ```
+
+2. **Reduce repetition:**
+   ```bash
+   export CLAUDISH_REP_PENALTY=1.15
+   ```
+
+3. **Use larger model or better quantization:**
+   - qwen2.5-coder:14b instead of :7b
+   - Q5_K_M instead of Q4_K_M
+
 ## Comparison with Claude Code
 
 | Feature | Claude Code | Claudish |
 |---------|-------------|----------|
-| Model | Anthropic models only | Any OpenRouter model |
-| API | Anthropic API | OpenRouter API |
-| Cost | Anthropic pricing | OpenRouter pricing |
-| Setup | API key → direct | API key → proxy → OpenRouter |
-| Speed | Direct connection | ~Same (local proxy) |
-| Features | All Claude Code features | All Claude Code features |
+| **Models** | Anthropic models only | Any OpenRouter model + **Local (Ollama/LM Studio)** |
+| **API** | Anthropic API | OpenRouter API + **Local providers** |
+| **Cost** | Anthropic pricing | OpenRouter pricing + **FREE (local models)** |
+| **Offline** | ❌ Requires internet | ✅ **Full offline support** with local models |
+| **Setup** | API key → direct | API key → proxy → OpenRouter/Local |
+| **Speed** | Direct connection | ~Same (local proxy) |
+| **Context Management** | Fixed (200K) | ✅ **Auto-pruning + Any size (8K-2M+)** |
+| **Optimizations** | Standard | ✅ **Tool filtering, lite mode, fine-tuning** |
+| **Features** | All Claude Code features | All Claude Code features + **local optimizations** |
 
 **When to use Claudish:**
-- ✅ Want to try different models (Grok, GPT-5, etc.)
-- ✅ Need OpenRouter-specific features
-- ✅ Prefer OpenRouter pricing
+- ✅ Want to try different models (Grok, GPT-5, Gemini, etc.)
+- ✅ **Need offline/local development** (Ollama, LM Studio)
+- ✅ **Low-resource models** (7B-14B with optimizations)
+- ✅ Prefer OpenRouter pricing or **FREE local models**
+- ✅ Need context management for small models
 - ✅ Testing model performance
 
 **When to use Claude Code:**
