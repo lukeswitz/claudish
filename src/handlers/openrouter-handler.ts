@@ -105,15 +105,42 @@ export class OpenRouterHandler implements ModelHandler {
 
     await this.middlewareManager.beforeRequest({ modelId: target, messages, tools, stream: true });
 
-    const response = await fetch(OPENROUTER_API_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${this.apiKey}`,
-            ...OPENROUTER_HEADERS,
-        },
-        body: JSON.stringify(openRouterPayload)
-    });
+    // Retry logic for transient network errors
+    let response: Response | null = null;
+    let lastError: Error | null = null;
+    const maxRetries = 3;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            response = await fetch(OPENROUTER_API_URL, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${this.apiKey}`,
+                    ...OPENROUTER_HEADERS,
+                },
+                body: JSON.stringify(openRouterPayload),
+                signal: AbortSignal.timeout(60000) // 60 second timeout for streaming requests
+            });
+            break; // Success, exit retry loop
+        } catch (err: any) {
+            lastError = err;
+            const isTransientError = err?.cause?.code === 'UND_ERR_SOCKET' ||
+                                   err?.code === 'ECONNRESET' ||
+                                   err?.code === 'ETIMEDOUT';
+
+            if (attempt < maxRetries && isTransientError) {
+                log(`[OpenRouter] Retry ${attempt}/${maxRetries} after network error: ${err.message}`);
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+                continue;
+            }
+            throw err; // Non-transient error or max retries reached
+        }
+    }
+
+    if (!response) {
+        throw lastError || new Error("Failed to get response from OpenRouter");
+    }
 
     if (!response.ok) return c.json({ error: await response.text() }, response.status as any);
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
