@@ -70,7 +70,7 @@ async function fetchOllamaModels(): Promise<ModelInfo[]> {
 
     if (!response.ok) return [];
 
-    const data = await response.json();
+    const data = await response.json() as any;
     const models = data.models || [];
 
     return models.map((model: any) => ({
@@ -94,36 +94,74 @@ async function fetchOllamaModels(): Promise<ModelInfo[]> {
 }
 
 /**
- * Fetch local LM Studio models
+ * Fetch local LM Studio models by scanning filesystem
+ * This works even when LM Studio isn't running
  */
 async function fetchLMStudioModels(): Promise<ModelInfo[]> {
   try {
-    const lmstudioHost = process.env.LMSTUDIO_BASE_URL || "http://localhost:1234";
-    const response = await fetch(`${lmstudioHost}/v1/models`, {
-      signal: AbortSignal.timeout(2000) // 2 second timeout
-    });
+    const { readdirSync, statSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
 
-    if (!response.ok) return [];
+    const lmStudioPath = join(homedir(), '.cache', 'lm-studio', 'models');
 
-    const data = await response.json();
-    const models = data.data || [];
+    try {
+      const providerDirs = readdirSync(lmStudioPath, { withFileTypes: true });
+      const models: ModelInfo[] = [];
 
-    return models.map((model: any) => ({
-      id: `lmstudio/${model.id}`,
-      name: `LM Studio: ${model.id}`,
-      description: `Local model`,
-      provider: "LM Studio (Local)",
-      pricing: {
-        input: "FREE",
-        output: "FREE",
-        average: "FREE"
-      },
-      context: "Local",
-      isFree: true,
-      supportsTools: true
-    }));
+      for (const providerDir of providerDirs) {
+        if (!providerDir.isDirectory() || providerDir.name.startsWith('.')) continue;
+
+        const providerPath = join(lmStudioPath, providerDir.name);
+
+        try {
+          const modelDirs = readdirSync(providerPath, { withFileTypes: true });
+
+          for (const modelDir of modelDirs) {
+            if (!modelDir.isDirectory()) continue;
+
+            const modelPath = join(providerPath, modelDir.name);
+
+            try {
+              const files = readdirSync(modelPath);
+              const ggufFiles = files.filter(f => f.endsWith('.gguf'));
+
+              if (ggufFiles.length > 0) {
+                const ggufFile = ggufFiles[0];
+                const fullPath = join(modelPath, ggufFile);
+                const stats = statSync(fullPath);
+                const sizeGB = (stats.size / (1024 ** 3)).toFixed(1);
+
+                models.push({
+                  id: `lmstudio/${modelDir.name}`,
+                  name: `LM Studio: ${modelDir.name}`,
+                  description: `Local model - ${sizeGB}GB`,
+                  provider: "LM Studio (Local)",
+                  pricing: {
+                    input: "FREE",
+                    output: "FREE",
+                    average: "FREE"
+                  },
+                  context: "Local",
+                  isFree: true,
+                  supportsTools: true
+                });
+              }
+            } catch {
+              continue;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return models;
+    } catch {
+      return [];
+    }
   } catch {
-    // LM Studio not running or not available
+    // LM Studio directory not found
     return [];
   }
 }
@@ -171,7 +209,7 @@ async function fetchAllModels(forceUpdate = false): Promise<any[]> {
     const response = await fetch("https://openrouter.ai/api/v1/models");
     if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-    const data = await response.json();
+    const data = await response.json() as any;
     const models = data.data;
 
     // Cache result
