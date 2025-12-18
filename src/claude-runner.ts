@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { ENV } from "./config.js";
@@ -46,9 +46,10 @@ function cleanupStaleFiles(): void {
  * This replaces the bash script to work on Windows
  */
 function createStatusLineScript(tokenFilePath: string): string {
-  const tempDir = tmpdir();
+  const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
+  const claudishDir = join(homeDir, ".claudish");
   const timestamp = Date.now();
-  const scriptPath = join(tempDir, `claudish-status-${timestamp}.js`);
+  const scriptPath = join(claudishDir, `status-${timestamp}.js`);
 
   // Escape backslashes for Windows paths in the script
   const escapedTokenPath = tokenFilePath.replace(/\\/g, "\\\\");
@@ -104,14 +105,26 @@ process.stdin.on('end', () => {
  * Create a temporary settings file with custom status line for this instance
  * This ensures each Claudish instance has its own status line without affecting
  * global Claude Code settings or other running instances
+ *
+ * Note: We use ~/.claudish/ instead of system temp directory to avoid Claude Code's
+ * file watcher trying to watch socket files in /tmp (which causes UNKNOWN errors)
  */
 function createTempSettingsFile(modelDisplay: string, port: string): string {
-  const tempDir = tmpdir();
-  const timestamp = Date.now();
-  const tempPath = join(tempDir, `claudish-settings-${timestamp}.json`);
+  const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
+  const claudishDir = join(homeDir, ".claudish");
 
-  // Token file path (cross-platform)
-  const tokenFilePath = join(tempDir, `claudish-tokens-${port}.json`);
+  // Ensure .claudish directory exists
+  try {
+    mkdirSync(claudishDir, { recursive: true });
+  } catch {
+    // Directory may already exist
+  }
+
+  const timestamp = Date.now();
+  const tempPath = join(claudishDir, `settings-${timestamp}.json`);
+
+  // Token file path - also in .claudish directory
+  const tokenFilePath = join(claudishDir, `tokens-${port}.json`);
 
   let statusCommand: string;
 
