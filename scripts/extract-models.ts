@@ -135,7 +135,7 @@ export const ENV = {
 // OpenRouter API Configuration
 export const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 export const OPENROUTER_HEADERS = {
-  "HTTP-Referer": "https://github.com/MadAppGang/claude-code",
+  "HTTP-Referer": "https://claudish.com",
   "X-Title": "Claudish - OpenRouter Proxy",
 } as const;
 `;
