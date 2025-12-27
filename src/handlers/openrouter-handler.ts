@@ -166,6 +166,19 @@ export class OpenRouterHandler implements ModelHandler {
           else messages.unshift({ role: "system", content: msg });
       }
 
+      // Gemini-specific instructions to suppress raw reasoning output
+      if (modelId.includes("gemini") || modelId.includes("google/")) {
+          const geminiMsg = `CRITICAL INSTRUCTION FOR OUTPUT FORMAT:
+1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
+2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so...", "First, I need to..."
+3. Do NOT output numbered planning steps or internal debugging statements.
+4. Only output: final responses, tool calls, and code. Nothing else.
+5. When calling tools, proceed directly without announcing your intentions.
+6. Your internal thinking should use the reasoning/thinking API, not visible text output.`;
+          if (messages.length > 0 && messages[0].role === 'system') messages[0].content += "\n\n" + geminiMsg;
+          else messages.unshift({ role: "system", content: geminiMsg });
+      }
+
       if (req.messages) {
           for (const msg of req.messages) {
               if (msg.role === "user") this.processUserMessage(msg, messages);
@@ -260,12 +273,13 @@ export class OpenRouterHandler implements ModelHandler {
               let usage: any = null;
               let finalized = false;
               let textStarted = false; let textIdx = -1;
-              let reasoningStarted = false; let reasoningIdx = -1;
+              let thinkingStarted = false; let thinkingIdx = -1;
               let curIdx = 0;
               const tools = new Map<number, any>();
               const toolIds = new Set<string>();
               let accTxt = 0;
               let lastActivity = Date.now();
+              let accumulatedThinking = ""; // For accumulating thinking content
 
               send("message_start", {
                   type: "message_start",
@@ -289,7 +303,7 @@ export class OpenRouterHandler implements ModelHandler {
               const finalize = async (reason: string, err?: string) => {
                   if (finalized) return;
                   finalized = true;
-                  if (reasoningStarted) { send("content_block_stop", { type: "content_block_stop", index: reasoningIdx }); reasoningStarted = false; }
+                  if (thinkingStarted) { send("content_block_stop", { type: "content_block_stop", index: thinkingIdx }); thinkingStarted = false; }
                   if (textStarted) { send("content_block_stop", { type: "content_block_stop", index: textIdx }); textStarted = false; }
                   for (const [_, t] of tools) if (t.started && !t.closed) { send("content_block_stop", { type: "content_block_stop", index: t.blockIndex }); t.closed = true; }
 
@@ -348,10 +362,47 @@ export class OpenRouterHandler implements ModelHandler {
                                       metadata: streamMetadata,
                                   });
 
+                                  // Handle reasoning_details from Gemini/OpenRouter models
+                                  // Convert to Claude thinking blocks for native display
+                                  if (delta.reasoning_details && delta.reasoning_details.length > 0) {
+                                      for (const detail of delta.reasoning_details) {
+                                          // Handle text and summary reasoning types
+                                          if (detail.type === "reasoning.text" || detail.type === "reasoning.summary") {
+                                              const thinkingContent = detail.content || detail.text || detail.summary || "";
+                                              if (thinkingContent) {
+                                                  lastActivity = Date.now();
+                                                  // Start thinking block if not started
+                                                  if (!thinkingStarted) {
+                                                      thinkingIdx = curIdx++;
+                                                      send("content_block_start", {
+                                                          type: "content_block_start",
+                                                          index: thinkingIdx,
+                                                          content_block: { type: "thinking", thinking: "" }
+                                                      });
+                                                      thinkingStarted = true;
+                                                  }
+                                                  // Send thinking delta
+                                                  send("content_block_delta", {
+                                                      type: "content_block_delta",
+                                                      index: thinkingIdx,
+                                                      delta: { type: "thinking_delta", thinking: thinkingContent }
+                                                  });
+                                                  accumulatedThinking += thinkingContent;
+                                              }
+                                          }
+                                          // Note: reasoning.encrypted is handled by middleware for signature storage
+                                      }
+                                  }
+
                                   // Logic for content handling (simplified port)
                                   const txt = delta.content || "";
                                   if (txt) {
                                       lastActivity = Date.now();
+                                      // Close thinking block before starting text
+                                      if (thinkingStarted) {
+                                          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+                                          thinkingStarted = false;
+                                      }
                                       if (!textStarted) {
                                           textIdx = curIdx++;
                                           send("content_block_start", { type: "content_block_start", index: textIdx, content_block: { type: "text", text: "" } });
@@ -368,6 +419,8 @@ export class OpenRouterHandler implements ModelHandler {
                                           let t = tools.get(idx);
                                           if (tc.function?.name) {
                                               if (!t) {
+                                                  // Close thinking and text blocks before starting tool
+                                                  if (thinkingStarted) { send("content_block_stop", { type: "content_block_stop", index: thinkingIdx }); thinkingStarted = false; }
                                                   if (textStarted) { send("content_block_stop", { type: "content_block_stop", index: textIdx }); textStarted = false; }
                                                   t = { id: tc.id || `tool_${Date.now()}_${idx}`, name: tc.function.name, blockIndex: curIdx++, started: false, closed: false, arguments: "" };
                                                   tools.set(idx, t);
