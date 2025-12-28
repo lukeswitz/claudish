@@ -150,7 +150,7 @@ async function runPrompt(
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://github.com/MadAppGang/claude-code",
+      "HTTP-Referer": "https://claudish.com",
       "X-Title": "Claudish MCP",
     },
     body: JSON.stringify({

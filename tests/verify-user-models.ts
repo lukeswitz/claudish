@@ -39,7 +39,7 @@ for (const model of USER_SPECIFIED_MODELS) {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": "https://github.com/MadAppGang/claude-code",
+        "HTTP-Referer": "https://claudish.com",
         "X-Title": "Claudish Model Verification",
       },
       body: JSON.stringify({

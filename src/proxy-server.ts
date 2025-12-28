@@ -69,17 +69,7 @@ export async function createProxyServer(
       return null;
   };
 
-  // Pre-initialize handlers for mapped models to ensure warm-up (context window fetch etc)
-  const initHandler = (m: string | undefined) => {
-      if (!m) return;
-      const localHandler = getLocalProviderHandler(m);
-      if (!localHandler && m.includes("/")) getOpenRouterHandler(m);
-  };
-  initHandler(model);
-  initHandler(modelMap?.opus);
-  initHandler(modelMap?.sonnet);
-  initHandler(modelMap?.haiku);
-  initHandler(modelMap?.subagent);
+  // Handlers are created lazily on first request - no pre-warming needed
 
   const getHandlerForRequest = (requestedModel: string): ModelHandler => {
       // 1. Monitor Mode Override
