@@ -245,10 +245,13 @@ export async function runClaudeWithProxy(
     // Indicate if this is a local model (for status line to show "LOCAL" instead of cost)
     CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
     // Set Claude Code standard model environment variables
-    // Both ANTHROPIC_MODEL and ANTHROPIC_SMALL_FAST_MODEL point to the same model
-    // since we're proxying everything through OpenRouter
+    // All model variables point to the user's selected model
     [ENV.ANTHROPIC_MODEL]: modelId,
     [ENV.ANTHROPIC_SMALL_FAST_MODEL]: modelId,
+    [ENV.ANTHROPIC_DEFAULT_OPUS_MODEL]: modelId,
+    [ENV.ANTHROPIC_DEFAULT_SONNET_MODEL]: modelId,
+    [ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL]: modelId,
+    [ENV.CLAUDE_CODE_SUBAGENT_MODEL]: modelId,
   };
 
   // Handle API key based on mode

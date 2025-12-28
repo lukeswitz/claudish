@@ -60,35 +60,83 @@ const TRUSTED_FREE_PROVIDERS = [
 
 /**
  * Fetch local Ollama models
+ * Tries both API (if server running) and CLI (fallback)
  */
 async function fetchOllamaModels(): Promise<ModelInfo[]> {
+  // Try API first (if Ollama server is running)
   try {
     const ollamaHost = process.env.OLLAMA_HOST || process.env.OLLAMA_BASE_URL || "http://localhost:11434";
     const response = await fetch(`${ollamaHost}/api/tags`, {
       signal: AbortSignal.timeout(2000) // 2 second timeout
     });
 
-    if (!response.ok) return [];
+    if (response.ok) {
+      const data = await response.json() as any;
+      const models = data.models || [];
 
-    const data = await response.json() as any;
-    const models = data.models || [];
-
-    return models.map((model: any) => ({
-      id: `ollama/${model.name}`,
-      name: `Ollama: ${model.name}`,
-      description: `Local model - ${(model.size / (1024 ** 3)).toFixed(1)}GB`,
-      provider: "Ollama (Local)",
-      pricing: {
-        input: "FREE",
-        output: "FREE",
-        average: "FREE"
-      },
-      context: "Local",
-      isFree: true,
-      supportsTools: true
-    }));
+      return models.map((model: any) => ({
+        id: `ollama/${model.name}`,
+        name: `Ollama: ${model.name}`,
+        description: `Local model - ${(model.size / (1024 ** 3)).toFixed(1)}GB`,
+        provider: "Ollama (Local)",
+        pricing: {
+          input: "FREE",
+          output: "FREE",
+          average: "FREE"
+        },
+        context: "Local",
+        isFree: true,
+        supportsTools: true
+      }));
+    }
   } catch {
-    // Ollama not running or not available
+    // API failed, try CLI fallback
+  }
+
+  // Fallback: Try Ollama CLI (works even when server not running)
+  try {
+    const { execSync } = await import('child_process');
+    const output = execSync('ollama list', {
+      encoding: 'utf-8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'] // Suppress stderr
+    });
+
+    const lines = output.trim().split('\n').slice(1); // Skip header
+    const models: ModelInfo[] = [];
+
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+
+      const name = parts[0];
+      const sizeStr = parts[2];
+
+      // Parse size (e.g., "3.3 GB" -> 3.3)
+      const sizeMatch = sizeStr.match(/([\d.]+)\s*(GB|MB)/i);
+      const sizeGB = sizeMatch
+        ? (sizeMatch[2].toUpperCase() === 'GB' ? parseFloat(sizeMatch[1]) : parseFloat(sizeMatch[1]) / 1024)
+        : 0;
+
+      models.push({
+        id: `ollama/${name}`,
+        name: `Ollama: ${name}`,
+        description: `Local model - ${sizeGB.toFixed(1)}GB`,
+        provider: "Ollama (Local)",
+        pricing: {
+          input: "FREE",
+          output: "FREE",
+          average: "FREE"
+        },
+        context: "Local",
+        isFree: true,
+        supportsTools: true
+      });
+    }
+
+    return models;
+  } catch {
+    // Ollama not installed or no models
     return [];
   }
 }

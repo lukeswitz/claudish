@@ -24,6 +24,8 @@ export async function createProxyServer(
   options: ProxyServerOptions = {}
 ): Promise<ProxyServer> {
 
+  log(`[Proxy] Initializing server: model=${model}, monitorMode=${monitorMode}, modelMap=${JSON.stringify(modelMap)}`);
+
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(anthropicApiKey);
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
@@ -77,17 +79,27 @@ export async function createProxyServer(
       // 1. Monitor Mode Override
       if (monitorMode) return nativeHandler;
 
-      // 2. Resolve target model based on mappings or defaults
-      let target = model || requestedModel; // Start with global default or request
+      // 2. Resolve target model based on explicit choice, mappings, or defaults
+      let target: string;
 
-      const req = requestedModel.toLowerCase();
-      if (modelMap) {
+      // If user explicitly selected a model, ALWAYS use it (highest priority)
+      if (model) {
+          target = model;
+          log(`[Proxy] Using user-selected model: ${target} (requested: ${requestedModel})`);
+      }
+      // Only apply profile mappings if no explicit model was selected
+      else if (modelMap) {
+          const req = requestedModel.toLowerCase();
           if (req.includes("opus") && modelMap.opus) target = modelMap.opus;
           else if (req.includes("sonnet") && modelMap.sonnet) target = modelMap.sonnet;
           else if (req.includes("haiku") && modelMap.haiku) target = modelMap.haiku;
-          // Note: We don't verify "subagent" string because we don't know what Claude sends for subagents
-          // unless it's "claude-3-haiku" (which is covered above) or specific.
-          // Assuming Haiku mapping covers subagent unless custom logic added.
+          else target = requestedModel;
+          log(`[Proxy] Using profile mapping: ${target} (requested: ${requestedModel})`);
+      }
+      // Fallback: use requested model
+      else {
+          target = requestedModel;
+          log(`[Proxy] Using requested model: ${target}`);
       }
 
       // 3. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)

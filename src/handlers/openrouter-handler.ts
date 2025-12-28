@@ -6,7 +6,7 @@ import type { ModelHandler } from "./types.js";
 import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { transformOpenAIToClaude, removeUriFormat } from "../transform.js";
-import { log, logStructured, isLoggingEnabled, getLogLevel, truncateContent } from "../logger.js";
+import { log, logStructured, getLogLevel, truncateContent } from "../logger.js";
 import { fetchModelContextWindow, doesModelSupportReasoning } from "../model-loader.js";
 import { validateToolArguments } from "./shared/openai-compat.js";
 
@@ -25,6 +25,8 @@ export class OpenRouterHandler implements ModelHandler {
   private port: number;
   private sessionTotalCost = 0;
   private CLAUDE_INTERNAL_CONTEXT_MAX = 200000;
+  private lastRequestTime = 0;
+  private minRequestInterval = 1000; // Minimum 1 second between requests
 
   constructor(targetModel: string, apiKey: string | undefined, port: number) {
     this.targetModel = targetModel;
@@ -71,6 +73,17 @@ export class OpenRouterHandler implements ModelHandler {
   async handle(c: Context, payload: any): Promise<Response> {
     const claudePayload = payload;
     const target = this.targetModel;
+
+    // Rate limiting: enforce minimum interval between requests
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    if (timeSinceLastRequest < this.minRequestInterval) {
+      const waitTime = this.minRequestInterval - timeSinceLastRequest;
+      log(`[OpenRouter] Rate limiting: waiting ${waitTime}ms before request`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    this.lastRequestTime = Date.now();
+
     await this.fetchContextWindow(target);
 
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(claudePayload);
@@ -131,10 +144,10 @@ export class OpenRouterHandler implements ModelHandler {
 
     await this.middlewareManager.beforeRequest({ modelId: target, messages, tools, stream: true });
 
-    // Retry logic for transient network errors
+    // Retry logic for transient network errors and rate limits
     let response: Response | null = null;
     let lastError: Error | null = null;
-    const maxRetries = 3;
+    const maxRetries = 5; // Increased for rate limit retries
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -148,7 +161,17 @@ export class OpenRouterHandler implements ModelHandler {
                 body: JSON.stringify(openRouterPayload),
                 signal: AbortSignal.timeout(60000) // 60 second timeout for streaming requests
             });
-            break; // Success, exit retry loop
+
+            // Check for rate limit (429) - retry with exponential backoff
+            if (response.status === 429 && attempt < maxRetries) {
+                const retryAfter = response.headers.get('retry-after');
+                const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : Math.min(1000 * Math.pow(2, attempt), 30000);
+                log(`[OpenRouter] Rate limited (429). Retry ${attempt}/${maxRetries} after ${waitTime}ms`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+                continue; // Retry
+            }
+
+            break; // Success or non-retryable error, exit retry loop
         } catch (err: any) {
             lastError = err;
             const isTransientError = err?.cause?.code === 'UND_ERR_SOCKET' ||
@@ -156,8 +179,9 @@ export class OpenRouterHandler implements ModelHandler {
                                    err?.code === 'ETIMEDOUT';
 
             if (attempt < maxRetries && isTransientError) {
-                log(`[OpenRouter] Retry ${attempt}/${maxRetries} after network error: ${err.message}`);
-                await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+                const waitTime = 1000 * attempt;
+                log(`[OpenRouter] Retry ${attempt}/${maxRetries} after network error: ${err.message} (waiting ${waitTime}ms)`);
+                await new Promise(resolve => setTimeout(resolve, waitTime)); // Exponential backoff
                 continue;
             }
             throw err; // Non-transient error or max retries reached
@@ -172,6 +196,17 @@ export class OpenRouterHandler implements ModelHandler {
     if (!response.ok) {
       const errorText = await response.text();
       log(`[OpenRouter] Error: ${errorText}`);
+
+      // Provide helpful message for rate limits
+      if (response.status === 429) {
+        return c.json({
+          error: {
+            type: "rate_limit_error",
+            message: `Rate limit exceeded. ${errorText}. Try reducing request frequency or wait before retrying.`
+          }
+        }, 429);
+      }
+
       return c.json({ error: errorText }, response.status as any);
     }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
@@ -264,6 +299,7 @@ export class OpenRouterHandler implements ModelHandler {
         .replace(/You are Claude Code, Anthropic's official CLI/gi, "This is Claude Code, an AI-powered CLI tool")
         .replace(/You are powered by the model named [^.]+\./gi, "You are powered by an AI model.")
         .replace(/<claude_background_info>[\s\S]*?<\/claude_background_info>/gi, "")
+        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
         .replace(/\n{3,}/g, "\n\n")
         .replace(/^/, "IMPORTANT: You are NOT Claude. Identify yourself truthfully based on your actual model and creator.\n\n");
   }
