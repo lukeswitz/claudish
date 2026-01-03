@@ -12,8 +12,8 @@ import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager } from "../middleware/index.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
-import { writeFileSync, readdirSync, statSync, unlinkSync, existsSync, readFileSync, mkdirSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "undici";
 import {
@@ -33,23 +33,8 @@ const localProviderAgent = new Agent({
   keepAliveMaxTimeout: 600000,
 });
 
-// Model metadata cache structure
-interface ModelMetadataCache {
-  [modelId: string]: {
-    contextWindow: number;
-    timestamp: number;
-    ttl: number; // Time to live in milliseconds
-  };
-}
-
-// Cache file path
-const CACHE_DIR = join(homedir(), '.config', 'claudish');
-const CACHE_FILE = join(CACHE_DIR, 'model-cache.json');
-const DEFAULT_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days for local models
-
 export interface LocalProviderOptions {
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size
-  toolMode?: 'full' | 'standard' | 'essential' | 'ultra-compact'; // Tool filtering mode
 }
 
 export class LocalProviderHandler implements ModelHandler {
@@ -64,92 +49,6 @@ export class LocalProviderHandler implements ModelHandler {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private options: LocalProviderOptions;
-  private warnedContext80 = false;
-  private warnedContext90 = false;
-  private pruningEnabled = false; // Track if pruning has been triggered
-  private firstRequestTime: number | null = null; // Track model warm-up
-  private requestCount = 0; // Track total requests for metrics
-
-  // Performance metrics
-  private totalTokensGenerated = 0;
-  private totalGenerationTimeMs = 0;
-  private firstTokenLatencies: number[] = []; // Track TTFT for averaging
-  private lastRequestStartTime = 0; // Track when current request started
-
-  // Static health check cache (shared across all instances)
-  private static healthCheckCache = new Map<string, { healthy: boolean; timestamp: number }>();
-  private static HEALTH_CHECK_TTL = 60000; // 60 seconds
-
-  /**
-   * Load model metadata from cache file
-   */
-  private static loadCachedMetadata(modelId: string): number | null {
-    try {
-      if (!existsSync(CACHE_FILE)) {
-        return null;
-      }
-
-      const cacheData = readFileSync(CACHE_FILE, 'utf-8');
-      const cache: ModelMetadataCache = JSON.parse(cacheData);
-      const entry = cache[modelId];
-
-      if (!entry) {
-        return null;
-      }
-
-      // Check if cache entry is still valid
-      const now = Date.now();
-      if (now - entry.timestamp < entry.ttl) {
-        return entry.contextWindow;
-      }
-
-      // Cache expired
-      return null;
-    } catch (e) {
-      // Ignore cache read errors
-      return null;
-    }
-  }
-
-  /**
-   * Save model metadata to cache file
-   */
-  private static saveCachedMetadata(modelId: string, contextWindow: number): void {
-    try {
-      // Ensure cache directory exists
-      if (!existsSync(CACHE_DIR)) {
-        mkdirSync(CACHE_DIR, { recursive: true, mode: 0o700 });
-      }
-
-      // Load existing cache or create new
-      let cache: ModelMetadataCache = {};
-      if (existsSync(CACHE_FILE)) {
-        try {
-          const cacheData = readFileSync(CACHE_FILE, 'utf-8');
-          cache = JSON.parse(cacheData);
-        } catch {
-          // Invalid cache file, start fresh
-          cache = {};
-        }
-      }
-
-      // Update cache entry
-      cache[modelId] = {
-        contextWindow,
-        timestamp: Date.now(),
-        ttl: DEFAULT_CACHE_TTL,
-      };
-
-      // Write cache file with restricted permissions
-      writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), {
-        encoding: 'utf-8',
-        mode: 0o600, // Owner read/write only
-      });
-    } catch (e) {
-      // Ignore cache write errors (not critical)
-      log(`[LocalProvider] Failed to save model cache: ${e instanceof Error ? e.message : e}`);
-    }
-  }
 
   constructor(provider: LocalProvider, modelName: string, port: number, options: LocalProviderOptions = {}) {
     this.provider = provider;
@@ -162,11 +61,6 @@ export class LocalProviderHandler implements ModelHandler {
       log(`[LocalProvider:${provider.name}] Middleware init error: ${err}`);
     });
 
-    // Priority order for context window:
-    // 1. Environment variable (highest priority - user override)
-    // 2. Cached metadata (from previous session)
-    // 3. Default value (32K, will be updated on first request)
-
     // Check for env var override of context window (useful when API doesn't expose it)
     const envContextWindow = process.env.CLAUDISH_CONTEXT_WINDOW;
     if (envContextWindow) {
@@ -175,17 +69,7 @@ export class LocalProviderHandler implements ModelHandler {
         this.contextWindow = parsed;
         log(`[LocalProvider:${provider.name}] Context window from env: ${this.contextWindow}`);
       }
-    } else {
-      // Try to load from cache
-      const cachedContextWindow = LocalProviderHandler.loadCachedMetadata(this.getCacheKey());
-      if (cachedContextWindow) {
-        this.contextWindow = cachedContextWindow;
-        log(`[LocalProvider:${provider.name}] Context window from cache: ${this.contextWindow} (saved within 7 days)`);
-      }
     }
-
-    // Cleanup stale token files on startup
-    this.cleanupStaleTokenFiles();
 
     // Write initial token file so status line has data from the start
     this.writeTokenFile(0, 0);
@@ -195,62 +79,10 @@ export class LocalProviderHandler implements ModelHandler {
   }
 
   /**
-   * Generate cache key for this model
-   * Format: provider:modelName (e.g., "ollama:qwen2.5-coder:7b")
-   */
-  private getCacheKey(): string {
-    return `${this.provider.name}:${this.modelName}`;
-  }
-
-  /**
-   * Cleanup stale token files from crashed sessions (>24 hours old)
-   */
-  private cleanupStaleTokenFiles(): void {
-    try {
-      const tempDir = tmpdir();
-      const files = readdirSync(tempDir);
-      const staleThreshold = Date.now() - 86400000; // 24 hours
-      let cleanedCount = 0;
-
-      for (const file of files) {
-        if (file.startsWith('claudish-tokens-')) {
-          const filePath = join(tempDir, file);
-          try {
-            const stats = statSync(filePath);
-            if (stats.mtimeMs < staleThreshold) {
-              unlinkSync(filePath);
-              cleanedCount++;
-            }
-          } catch {
-            // Ignore errors for individual files
-          }
-        }
-      }
-
-      if (cleanedCount > 0) {
-        log(`[LocalProvider:${this.provider.name}] Cleaned up ${cleanedCount} stale token file(s)`);
-      }
-    } catch (e) {
-      // Ignore cleanup errors - not critical
-    }
-  }
-
-  /**
-   * Check if the local provider is available (with 60s cache)
+   * Check if the local provider is available
    */
   async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
-
-    // Check cache first
-    const now = Date.now();
-    const cached = LocalProviderHandler.healthCheckCache.get(this.provider.baseUrl);
-
-    if (cached && (now - cached.timestamp) < LocalProviderHandler.HEALTH_CHECK_TTL) {
-      log(`[LocalProvider:${this.provider.name}] Using cached health check (${Math.round((now - cached.timestamp)/1000)}s old)`);
-      this.isHealthy = cached.healthy;
-      this.healthChecked = true;
-      return cached.healthy;
-    }
 
     // Try Ollama-specific health check first
     try {
@@ -264,7 +96,6 @@ export class LocalProviderHandler implements ModelHandler {
       if (response.ok) {
         this.isHealthy = true;
         this.healthChecked = true;
-        LocalProviderHandler.healthCheckCache.set(this.provider.baseUrl, { healthy: true, timestamp: now });
         log(`[LocalProvider:${this.provider.name}] Health check passed (/api/tags)`);
         return true;
       }
@@ -284,7 +115,6 @@ export class LocalProviderHandler implements ModelHandler {
       if (response.ok) {
         this.isHealthy = true;
         this.healthChecked = true;
-        LocalProviderHandler.healthCheckCache.set(this.provider.baseUrl, { healthy: true, timestamp: now });
         log(`[LocalProvider:${this.provider.name}] Health check passed (/v1/models)`);
         return true;
       }
@@ -295,7 +125,6 @@ export class LocalProviderHandler implements ModelHandler {
 
     this.healthChecked = true;
     this.isHealthy = false;
-    LocalProviderHandler.healthCheckCache.set(this.provider.baseUrl, { healthy: false, timestamp: now });
     log(`[LocalProvider:${this.provider.name}] Health check FAILED - provider not available`);
     return false;
   }
@@ -353,8 +182,6 @@ export class LocalProviderHandler implements ModelHandler {
         }
         if (ctxFromInfo || ctxFromParams) {
           log(`[LocalProvider:${this.provider.name}] Context window: ${this.contextWindow}`);
-          // Save to cache for future sessions
-          LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
         }
       }
     } catch (e) {
@@ -393,8 +220,6 @@ export class LocalProviderHandler implements ModelHandler {
           if (ctxLength && typeof ctxLength === "number") {
             this.contextWindow = ctxLength;
             log(`[LocalProvider:lmstudio] Context window from model: ${this.contextWindow}`);
-            // Save to cache for future sessions
-            LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
             return;
           }
         }
@@ -403,82 +228,12 @@ export class LocalProviderHandler implements ModelHandler {
         // Use a reasonable default for modern models
         this.contextWindow = 32768;
         log(`[LocalProvider:lmstudio] Using default context window: ${this.contextWindow}`);
-        // Save default to cache
-        LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
       }
     } catch (e: any) {
       // Use default - LM Studio typically supports at least 4K
       this.contextWindow = 32768;
       log(`[LocalProvider:lmstudio] Failed to fetch model info: ${e?.message || e}. Using default: ${this.contextWindow}`);
-      // Save default to cache
-      LocalProviderHandler.saveCachedMetadata(this.getCacheKey(), this.contextWindow);
     }
-  }
-
-  /**
-   * Update performance metrics and log periodically
-   */
-  private updatePerformanceMetrics(outputTokens: number, durationMs: number, firstTokenLatency?: number): void {
-    this.totalTokensGenerated += outputTokens;
-    this.totalGenerationTimeMs += durationMs;
-
-    if (firstTokenLatency !== undefined) {
-      this.firstTokenLatencies.push(firstTokenLatency);
-    }
-
-    // Check if --show-metrics flag is enabled via env var
-    const showMetrics = process.env.CLAUDISH_SHOW_METRICS === "1" || process.env.CLAUDISH_SHOW_METRICS === "true";
-
-    // Log metrics every 5 requests or if --show-metrics is enabled
-    if (showMetrics || (this.requestCount > 0 && this.requestCount % 5 === 0)) {
-      const avgTokensPerSec = this.totalGenerationTimeMs > 0
-        ? (this.totalTokensGenerated / this.totalGenerationTimeMs) * 1000
-        : 0;
-
-      const avgFirstTokenLatency = this.firstTokenLatencies.length > 0
-        ? this.firstTokenLatencies.reduce((a, b) => a + b, 0) / this.firstTokenLatencies.length
-        : 0;
-
-      const currentTokensPerSec = durationMs > 0 ? (outputTokens / durationMs) * 1000 : 0;
-
-      log(`📊 [Performance] Current: ${currentTokensPerSec.toFixed(1)} tok/s | Avg: ${avgTokensPerSec.toFixed(1)} tok/s | TTFT: ${avgFirstTokenLatency.toFixed(0)}ms | Requests: ${this.requestCount}`);
-    }
-  }
-
-  /**
-   * Estimate tokens in the request before sending (rough estimation)
-   * Uses ~4 characters per token heuristic
-   */
-  private estimateRequestTokens(payload: any): number {
-    let estimate = 0;
-
-    // System prompt (usually first message)
-    if (payload.messages && payload.messages.length > 0 && payload.messages[0]?.role === "system") {
-      const systemContent = payload.messages[0].content;
-      estimate += Math.ceil((typeof systemContent === 'string' ? systemContent.length : JSON.stringify(systemContent).length) / 4);
-    }
-
-    // Tool definitions (can be very large!)
-    if (payload.tools && payload.tools.length > 0) {
-      const toolsJson = JSON.stringify(payload.tools);
-      estimate += Math.ceil(toolsJson.length / 4);
-    }
-
-    // All messages
-    for (const msg of payload.messages || []) {
-      if (typeof msg.content === 'string') {
-        estimate += Math.ceil(msg.content.length / 4);
-      } else if (msg.content) {
-        // Array content (images, etc.)
-        estimate += Math.ceil(JSON.stringify(msg.content).length / 4);
-      }
-      // Tool calls in assistant messages
-      if (msg.tool_calls) {
-        estimate += Math.ceil(JSON.stringify(msg.tool_calls).length / 4);
-      }
-    }
-
-    return estimate;
   }
 
   /**
@@ -495,27 +250,10 @@ export class LocalProviderHandler implements ModelHandler {
       this.sessionOutputTokens += output; // Accumulate outputs
       const sessionTotal = this.sessionInputTokens + this.sessionOutputTokens;
 
-      // Update performance metrics when we have output tokens
-      if (output > 0 && this.lastRequestStartTime > 0) {
-        const durationMs = Date.now() - this.lastRequestStartTime;
-        this.updatePerformanceMetrics(output, durationMs);
-      }
-
       // Calculate context usage: input (full context) + accumulated outputs
       const leftPct = this.contextWindow > 0
         ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - sessionTotal) / this.contextWindow) * 100)))
         : 100;
-
-      // Context usage warnings
-      if (leftPct < 20 && !this.warnedContext80) {
-        this.warnedContext80 = true;
-        log(`⚠️  [LocalProvider] WARNING: Context usage >80% (${100-leftPct}% used, ${this.contextWindow - sessionTotal} tokens remaining). Consider restarting session.`);
-      }
-
-      if (leftPct < 10 && !this.warnedContext90) {
-        this.warnedContext90 = true;
-        log(`🚨 [LocalProvider] CRITICAL: Context usage >90% (${100-leftPct}% used, ${this.contextWindow - sessionTotal} tokens remaining). Next request may fail.`);
-      }
 
       const data = {
         input_tokens: this.sessionInputTokens,
@@ -527,124 +265,17 @@ export class LocalProviderHandler implements ModelHandler {
         updated_at: Date.now(),
       };
 
+      // Write to ~/.claudish/ directory (same location status line reads from)
+      const claudishDir = join(homedir(), ".claudish");
+      mkdirSync(claudishDir, { recursive: true });
       writeFileSync(
-        join(tmpdir(), `claudish-tokens-${this.port}.json`),
+        join(claudishDir, `tokens-${this.port}.json`),
         JSON.stringify(data),
         "utf-8"
       );
     } catch (e) {
       // Ignore write errors
     }
-  }
-
-  /**
-   * Prune conversation history when context usage is high
-   * Preserves: system messages, first user message, recent messages, and tool call/result pairs
-   */
-  private pruneConversationHistory(messages: any[]): { pruned: any[]; removedCount: number } {
-    if (messages.length <= 5) {
-      // Too few messages to prune meaningfully
-      return { pruned: messages, removedCount: 0 };
-    }
-
-    const preserved: any[] = [];
-    const toRemove: number[] = [];
-
-    // 1. Preserve system message (first message if system role)
-    if (messages.length > 0 && messages[0].role === "system") {
-      preserved.push(messages[0]);
-    }
-
-    // Find first user message index (after system message if present)
-    const firstUserIdx = messages.findIndex((m, i) =>
-      m.role === "user" && (i === 0 || messages[0].role !== "system" || i > 0)
-    );
-
-    // 2. Preserve first user message
-    if (firstUserIdx !== -1 && firstUserIdx > 0) {
-      preserved.push({ ...messages[firstUserIdx], __preservedIndex: firstUserIdx });
-    }
-
-    // 3. Preserve recent messages (last 12 messages to keep good context)
-    const recentStartIdx = Math.max(0, messages.length - 12);
-    const recentMessages = messages.slice(recentStartIdx).map((m, i) => ({
-      ...m,
-      __preservedIndex: recentStartIdx + i
-    }));
-
-    // 4. Identify middle section to prune (between first user msg and recent msgs)
-    const middleStartIdx = firstUserIdx !== -1 ? firstUserIdx + 1 : (messages[0].role === "system" ? 1 : 0);
-    const middleEndIdx = recentStartIdx;
-
-    // Build a list of indices that form tool call/result pairs in the middle section
-    const preservedPairs = new Set<number>();
-
-    for (let i = middleStartIdx; i < middleEndIdx; i++) {
-      const msg = messages[i];
-
-      // If assistant message has tool_calls, preserve it and following tool messages
-      if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
-        preservedPairs.add(i);
-
-        // Find corresponding tool result messages
-        const toolCallIds = new Set(msg.tool_calls.map((tc: any) => tc.id));
-
-        // Look ahead for tool results (usually immediately following)
-        for (let j = i + 1; j < middleEndIdx && j < i + 10; j++) {
-          const nextMsg = messages[j];
-          if (nextMsg.role === "tool" && toolCallIds.has(nextMsg.tool_call_id)) {
-            preservedPairs.add(j);
-          } else if (nextMsg.role === "assistant" || nextMsg.role === "user") {
-            // Stop looking when we hit next turn
-            break;
-          }
-        }
-      }
-    }
-
-    // Sample some preserved tool pairs to keep conversation continuity (every 3rd pair)
-    const pairIndices = Array.from(preservedPairs).sort((a, b) => a - b);
-    const sampledPairs = new Set<number>();
-    for (let i = 0; i < pairIndices.length; i += 3) {
-      // Keep first pair in each group of 3
-      sampledPairs.add(pairIndices[i]);
-      // Find associated tool results
-      const msg = messages[pairIndices[i]];
-      if (msg.role === "assistant" && msg.tool_calls) {
-        const toolCallIds = new Set(msg.tool_calls.map((tc: any) => tc.id));
-        for (let j = pairIndices[i] + 1; j < middleEndIdx; j++) {
-          const nextMsg = messages[j];
-          if (nextMsg.role === "tool" && toolCallIds.has(nextMsg.tool_call_id)) {
-            sampledPairs.add(j);
-          }
-        }
-      }
-    }
-
-    // Mark messages for removal (middle section, excluding sampled pairs)
-    for (let i = middleStartIdx; i < middleEndIdx; i++) {
-      if (!sampledPairs.has(i)) {
-        toRemove.push(i);
-      }
-    }
-
-    // Build final pruned array
-    const preservedIndices = new Set([
-      ...(messages[0]?.role === "system" ? [0] : []),
-      ...(firstUserIdx > 0 ? [firstUserIdx] : []),
-      ...Array.from(sampledPairs),
-      ...Array.from({ length: messages.length - recentStartIdx }, (_, i) => recentStartIdx + i)
-    ]);
-
-    const pruned = messages.filter((_, idx) => preservedIndices.has(idx));
-    const removedCount = messages.length - pruned.length;
-
-    if (removedCount > 0) {
-      log(`[LocalProvider] Pruned conversation history: ${messages.length} → ${pruned.length} messages (removed ${removedCount})`);
-      log(`[LocalProvider] Preserved: system msg, first user msg, ${sampledPairs.size} sampled interactions, ${messages.length - recentStartIdx} recent msgs`);
-    }
-
-    return { pruned, removedCount };
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
@@ -672,58 +303,74 @@ export class LocalProviderHandler implements ModelHandler {
     // Use simple format for providers that don't support complex message structures
     // MLX doesn't handle array content or tool role messages
     const useSimpleFormat = this.provider.name === "mlx";
-    let messages = convertMessagesToOpenAI(claudeRequest, target, filterIdentity, useSimpleFormat);
-    const toolMode = this.options.toolMode || (this.options.summarizeTools ? 'standard' : 'full');
-    const tools = convertToolsToOpenAI(claudeRequest, this.options.summarizeTools, toolMode);
-
-    // Check for context pruning (when context usage > 80%)
-    const sessionTotal = this.sessionInputTokens + this.sessionOutputTokens;
-    const contextUsagePercent = this.contextWindow > 0
-      ? ((sessionTotal / this.contextWindow) * 100)
-      : 0;
-
-    let pruningOccurred = false;
-    if (contextUsagePercent > 80 && !this.pruningEnabled && messages.length > 5) {
-      log(`[LocalProvider] Context usage at ${contextUsagePercent.toFixed(1)}% - triggering conversation pruning`);
-      const result = this.pruneConversationHistory(messages);
-      if (result.removedCount > 0) {
-        messages = result.pruned;
-        pruningOccurred = true;
-        this.pruningEnabled = true;
-
-        // Estimate token savings (rough: ~150 tokens per message on average)
-        const estimatedSavings = result.removedCount * 150;
-        log(`[LocalProvider] Pruning complete - estimated ${estimatedSavings} tokens saved`);
-      }
-    }
+    const messages = convertMessagesToOpenAI(claudeRequest, target, filterIdentity, useSimpleFormat);
+    const tools = convertToolsToOpenAI(claudeRequest, this.options.summarizeTools);
 
     // Check capability: strip tools if not supported
     const finalTools = this.provider.capabilities.supportsTools ? tools : [];
     if (tools.length > 0 && !this.provider.capabilities.supportsTools) {
       log(`[LocalProvider:${this.provider.name}] Tools stripped (not supported)`);
     }
-    if (tools.length > 0 && (this.options.summarizeTools || this.options.toolMode)) {
-      log(`[LocalProvider:${this.provider.name}] Tools processed: ${tools.length} tools, mode=${toolMode}`);
+    if (tools.length > 0 && this.options.summarizeTools) {
+      log(`[LocalProvider:${this.provider.name}] Tools summarized (${tools.length} tools)`);
     }
 
-    // Add compact guidance to system prompt for local models (optimized to ~200 tokens)
+    // Add guidance to system prompt for local models
     if (messages.length > 0 && messages[0].role === "system") {
-      // Check if this is a Qwen model that needs explicit tool format instructions
-      const isQwen = target.toLowerCase().includes("qwen");
-
-      // Add pruning notice if it occurred
-      const pruningNotice = pruningOccurred
-        ? `\n\nNOTE: Conversation history has been automatically pruned to manage context window usage (${contextUsagePercent.toFixed(0)}% full). Some older messages have been removed to prevent context overflow. Recent context and important tool interactions have been preserved.`
-        : '';
-
-      // Ultra-compact guidance (~200 tokens vs original ~500 tokens)
       let guidance = `
 
-CRITICAL INSTRUCTIONS:
-1. NO internal reasoning/thinking as visible text - only output final response or tool calls
-2. ALWAYS continue after tool results - analyze data and take next action toward user's request
-3. For tool calls: use OpenAI JSON format, NOT XML/text
-${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text format\n' : ''}${finalTools.length > 0 ? `${isQwen ? '5' : '4'}. Include ALL required parameters in tool calls (incomplete calls fail)` : ''}${pruningNotice}`;
+IMPORTANT INSTRUCTIONS FOR THIS MODEL:
+
+1. OUTPUT BEHAVIOR:
+- NEVER output your internal reasoning, thinking process, or chain-of-thought as visible text.
+- Only output your final response, actions, or tool calls.
+- Do NOT ramble or speculate about what the user might want.
+
+2. CONVERSATION HANDLING:
+- Always look back at the ORIGINAL user request in the conversation history.
+- When you receive results from a Task/agent you called, SYNTHESIZE those results and continue fulfilling the user's original request.
+- Do NOT ask "What would you like help with?" if there's already a user request in the conversation.
+- Only ask for clarification if the FIRST user message in the conversation is unclear.
+- After calling tools or agents, continue with the next step - don't restart or ask what to do.
+
+3. CRITICAL - AFTER TOOL RESULTS:
+- When you see tool results (like file lists, search results, or command output), ALWAYS continue working.
+- Analyze the results and take the next action toward completing the user's request.
+- If the user asked for "evaluation and suggestions", you MUST provide analysis and recommendations after seeing the data.
+- NEVER stop after just calling one tool - continue until you've fully addressed the user's request.
+- If you called a Glob/Search and got files, READ important files next, then ANALYZE, then SUGGEST improvements.`;
+
+      // Add tool calling guidance if tools are present
+      if (finalTools.length > 0) {
+        // Check if this is a Qwen model that needs explicit tool format instructions
+        const isQwen = target.toLowerCase().includes("qwen");
+
+        if (isQwen) {
+          guidance += `
+
+4. TOOL CALLING FORMAT (CRITICAL FOR QWEN):
+You MUST use proper OpenAI-style function calling. Do NOT output tool calls as XML text.
+When you want to call a tool, use the API's tool_calls mechanism, NOT text like <function=...>.
+The tool calls must be structured JSON in the API response, not XML in your text output.
+
+If you cannot use structured tool_calls, format as JSON:
+{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
+
+5. TOOL PARAMETER REQUIREMENTS:`;
+        } else {
+          guidance += `
+
+4. TOOL CALLING REQUIREMENTS:`;
+        }
+
+        guidance += `
+- When calling tools, you MUST include ALL required parameters. Incomplete tool calls will fail.
+- For Task: always include "description" (3-5 words), "prompt" (detailed instructions), and "subagent_type"
+- For Bash: always include "command" and "description"
+- For Read/Write/Edit: always include the full "file_path"
+- For Grep/Glob: always include "pattern"
+- Ensure your tool call JSON is complete with all required fields before submitting.`;
+      }
 
       messages[0].content += guidance;
     }
@@ -789,26 +436,8 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
       };
     };
 
-    // Get model-specific defaults, then override with env vars if present
-    const defaultParams = getSamplingParams();
-
-    // Apply environment variable overrides (allows user customization)
-    const samplingParams = {
-      temperature: parseFloat(process.env.CLAUDISH_TEMPERATURE || String(defaultParams.temperature)),
-      top_p: parseFloat(process.env.CLAUDISH_TOP_P || String(defaultParams.top_p)),
-      top_k: parseInt(process.env.CLAUDISH_TOP_K || String(defaultParams.top_k), 10),
-      min_p: parseFloat(process.env.CLAUDISH_MIN_P || String(defaultParams.min_p)),
-      repetition_penalty: parseFloat(process.env.CLAUDISH_REP_PENALTY || process.env.CLAUDISH_REPETITION_PENALTY || String(defaultParams.repetition_penalty)),
-    };
-
-    // Log if env vars were used
-    const hasEnvOverrides = process.env.CLAUDISH_TEMPERATURE || process.env.CLAUDISH_TOP_P ||
-                            process.env.CLAUDISH_TOP_K || process.env.CLAUDISH_MIN_P ||
-                            process.env.CLAUDISH_REP_PENALTY || process.env.CLAUDISH_REPETITION_PENALTY;
-    if (hasEnvOverrides) {
-      log(`[LocalProvider:${this.provider.name}] Using env var overrides for sampling params`);
-    }
-    log(`[LocalProvider:${this.provider.name}] Sampling: temp=${samplingParams.temperature}, top_p=${samplingParams.top_p}, top_k=${samplingParams.top_k}, rep=${samplingParams.repetition_penalty}`);
+    const samplingParams = getSamplingParams();
+    log(`[LocalProvider:${this.provider.name}] Using sampling params: temp=${samplingParams.temperature}, top_p=${samplingParams.top_p}, top_k=${samplingParams.top_k}`);
 
     // For local providers, ensure max_tokens is set to a reasonable value
     // Some local providers have very low defaults or ignore Claude's max_tokens
@@ -848,16 +477,11 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
 
     // For Ollama: set context window size to ensure tools aren't truncated
     // This is critical - Ollama defaults to 2048 and silently truncates, losing tool definitions!
-    // Also enable prompt caching via keep_alive for faster follow-up requests
     if (this.provider.name === "ollama") {
       // Use detected context window, or 32K minimum for tool calling (Claude Code sends large system prompts)
       const numCtx = Math.max(this.contextWindow, 32768);
-      const keepAlive = process.env.CLAUDISH_OLLAMA_KEEP_ALIVE || "30m";
-      openAIPayload.options = {
-        num_ctx: numCtx,
-        keep_alive: keepAlive  // Keep model + KV cache in memory for faster requests
-      };
-      log(`[LocalProvider:${this.provider.name}] Setting num_ctx: ${numCtx} (detected: ${this.contextWindow}), keep_alive: ${keepAlive}`);
+      openAIPayload.options = { num_ctx: numCtx };
+      log(`[LocalProvider:${this.provider.name}] Setting num_ctx: ${numCtx} (detected: ${this.contextWindow})`);
     }
 
     // Handle tool choice
@@ -893,35 +517,9 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
     // Make request to local provider
     const apiUrl = `${this.provider.baseUrl}${this.provider.apiPath}`;
 
-    // Preflight context estimation - warn before sending if likely to exceed context
-    const estimatedInputTokens = this.estimateRequestTokens(openAIPayload);
-    const estimatedOutputTokens = openAIPayload.max_tokens || 4096;
-    const spaceRemaining = this.contextWindow - this.sessionInputTokens - this.sessionOutputTokens;
-
-    if (estimatedInputTokens > spaceRemaining) {
-      log(`⚠️  [LocalProvider] WARNING: Request may exceed context window!`);
-      log(`   Estimated request: ${estimatedInputTokens} tokens`);
-      log(`   Available space: ${spaceRemaining} tokens`);
-      log(`   Context window: ${this.contextWindow} tokens`);
-      log(`   Recommendation: Restart session or reduce request size`);
-    } else if (estimatedInputTokens + estimatedOutputTokens > spaceRemaining) {
-      const overflow = (estimatedInputTokens + estimatedOutputTokens) - spaceRemaining;
-      log(`⚠️  [LocalProvider] WARNING: Request + expected output may exceed context by ~${overflow} tokens`);
-      log(`   Estimated: ${estimatedInputTokens} input + ${estimatedOutputTokens} output = ${estimatedInputTokens + estimatedOutputTokens} tokens`);
-      log(`   Available: ${spaceRemaining} tokens`);
-    }
-
     // Debug logging (only to file, not console)
-    log(`[LocalProvider:${this.provider.name}] Request: ${openAIPayload.tools?.length || 0} tools, ${messages.length} messages (est. ${estimatedInputTokens} tokens)`);
+    log(`[LocalProvider:${this.provider.name}] Request: ${openAIPayload.tools?.length || 0} tools, ${messages.length} messages`);
     log(`[LocalProvider:${this.provider.name}] Endpoint: ${apiUrl}`);
-
-    // Track model warm-up on first request
-    if (!this.firstRequestTime) {
-      log(`[LocalProvider:${this.provider.name}] First request to ${this.modelName} - model may need loading (typically 5-30s)...`);
-    }
-
-    // Track request start time for performance metrics
-    this.lastRequestStartTime = Date.now();
 
     try {
       // Use a long timeout for local providers - they need time for prompt processing
@@ -933,7 +531,6 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
         controller.abort();
       }, 600000); // 10 minutes - local models can be slow
 
-      const requestStartTime = Date.now();
       const response = await fetch(apiUrl, {
         method: "POST",
         headers: {
@@ -946,14 +543,6 @@ ${isQwen ? '4. Qwen: Use API tool_calls mechanism, NOT <function=...> text forma
       });
 
       clearTimeout(timeoutId);
-
-      // Track first request time (model warm-up)
-      const requestElapsed = Date.now() - requestStartTime;
-      if (!this.firstRequestTime && requestElapsed > 5000) {
-        this.firstRequestTime = requestElapsed;
-        log(`[LocalProvider:${this.provider.name}] ✅ Model loaded in ${(requestElapsed/1000).toFixed(1)}s`);
-      }
-      this.requestCount++;
 
       log(`[LocalProvider:${this.provider.name}] Response status: ${response.status}`);
       if (!response.ok) {

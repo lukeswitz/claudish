@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { ENV } from "./config.js";
@@ -10,35 +10,6 @@ import type { ClaudishConfig } from "./types.js";
 // (module-level constants can be inlined by bundlers at build time)
 function isWindows(): boolean {
   return process.platform === "win32";
-}
-
-/**
- * Clean up stale status scripts and settings files older than 24 hours
- * Prevents accumulation of temporary files from crashed/interrupted sessions
- */
-function cleanupStaleFiles(): void {
-  try {
-    const tempDir = tmpdir();
-    const files = readdirSync(tempDir);
-    const staleThreshold = Date.now() - 86400000; // 24 hours in milliseconds
-
-    for (const file of files) {
-      // Clean up both status scripts (.js) and settings files (.json)
-      if (file.startsWith('claudish-status-') || file.startsWith('claudish-settings-')) {
-        const filePath = join(tempDir, file);
-        try {
-          const stats = statSync(filePath);
-          if (stats.mtimeMs < staleThreshold) {
-            unlinkSync(filePath);
-          }
-        } catch {
-          // Ignore errors (file may have been deleted already)
-        }
-      }
-    }
-  } catch {
-    // Ignore errors (tmpdir may not be readable)
-  }
 }
 
 /**
@@ -143,7 +114,9 @@ function createTempSettingsFile(modelDisplay: string, port: string): string {
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";
 
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null) && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; else COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2); fi && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi; else COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2); fi && [ -z "$COST" ] && COST="0" || true && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$CLAUDISH_ACTIVE_MODEL_NAME" "$COST_DISPLAY" "$CTX"`;
+    // Cost comes from Claude CLI's total_cost_usd (we don't track cost in token file)
+    // Context percentage comes from our token file
+    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null) && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi; fi && COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2) && [ -z "$COST" ] && COST="0" || true && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$CLAUDISH_ACTIVE_MODEL_NAME" "$COST_DISPLAY" "$CTX"`;
   }
 
   const settings = {
@@ -165,9 +138,6 @@ export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string
 ): Promise<number> {
-  // Clean up stale temporary files from previous sessions
-  cleanupStaleFiles();
-
   // Use actual OpenRouter model ID (no translation)
   // This ensures ANY model works, not just our shortlist
   const modelId = config.model || "unknown";
@@ -245,13 +215,10 @@ export async function runClaudeWithProxy(
     // Indicate if this is a local model (for status line to show "LOCAL" instead of cost)
     CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
     // Set Claude Code standard model environment variables
-    // All model variables point to the user's selected model
+    // Both ANTHROPIC_MODEL and ANTHROPIC_SMALL_FAST_MODEL point to the same model
+    // since we're proxying everything through OpenRouter
     [ENV.ANTHROPIC_MODEL]: modelId,
     [ENV.ANTHROPIC_SMALL_FAST_MODEL]: modelId,
-    [ENV.ANTHROPIC_DEFAULT_OPUS_MODEL]: modelId,
-    [ENV.ANTHROPIC_DEFAULT_SONNET_MODEL]: modelId,
-    [ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL]: modelId,
-    [ENV.CLAUDE_CODE_SUBAGENT_MODEL]: modelId,
   };
 
   // Handle API key based on mode
