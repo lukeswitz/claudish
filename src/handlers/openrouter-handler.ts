@@ -134,20 +134,69 @@ export class OpenRouterHandler implements ModelHandler {
 
     await this.middlewareManager.beforeRequest({ modelId: target, messages, tools, stream: true });
 
-    const response = await fetch(OPENROUTER_API_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${this.apiKey}`,
-            ...OPENROUTER_HEADERS,
-        },
-        body: JSON.stringify(openRouterPayload)
-    });
+    // Retry logic for transient network errors and rate limits
+    let response: Response | null = null;
+    let lastError: Error | null = null;
+    const maxRetries = 5; // Increased for rate limit retries
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            response = await fetch(OPENROUTER_API_URL, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${this.apiKey}`,
+                    ...OPENROUTER_HEADERS,
+                },
+                body: JSON.stringify(openRouterPayload),
+                signal: AbortSignal.timeout(60000) // 60 second timeout for streaming requests
+            });
+
+            // Check for rate limit (429) - retry with exponential backoff
+            if (response.status === 429 && attempt < maxRetries) {
+                const retryAfter = response.headers.get('retry-after');
+                const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : Math.min(1000 * Math.pow(2, attempt), 30000);
+                log(`[OpenRouter] Rate limited (429). Retry ${attempt}/${maxRetries} after ${waitTime}ms`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+                continue; // Retry
+            }
+
+            break; // Success or non-retryable error, exit retry loop
+        } catch (err: any) {
+            lastError = err;
+            const isTransientError = err?.cause?.code === 'UND_ERR_SOCKET' ||
+                                   err?.code === 'ECONNRESET' ||
+                                   err?.code === 'ETIMEDOUT';
+
+            if (attempt < maxRetries && isTransientError) {
+                const waitTime = 1000 * attempt;
+                log(`[OpenRouter] Retry ${attempt}/${maxRetries} after network error: ${err.message} (waiting ${waitTime}ms)`);
+                await new Promise(resolve => setTimeout(resolve, waitTime)); // Exponential backoff
+                continue;
+            }
+            throw err; // Non-transient error or max retries reached
+        }
+    }
+
+    if (!response) {
+        throw lastError || new Error("Failed to get response from OpenRouter");
+    }
 
     log(`[OpenRouter] Response status: ${response.status}`);
     if (!response.ok) {
       const errorText = await response.text();
       log(`[OpenRouter] Error: ${errorText}`);
+
+      // Provide helpful message for rate limits
+      if (response.status === 429) {
+        return c.json({
+          error: {
+            type: "rate_limit_error",
+            message: `Rate limit exceeded. ${errorText}. Try reducing request frequency or wait before retrying.`
+          }
+        }, 429);
+      }
+
       return c.json({ error: errorText }, response.status as any);
     }
     if (droppedParams.length > 0) c.header("X-Dropped-Params", droppedParams.join(", "));
