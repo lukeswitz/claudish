@@ -1,8 +1,8 @@
 # Claudish
 
-> Run Claude Code with OpenRouter models via local proxy
+> Run Claude Code with any AI model - OpenRouter, Gemini, OpenAI, or local models
 
-**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any OpenRouter model by proxying requests through a local Anthropic API-compatible server.
+**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server. Supports OpenRouter (100+ models), direct Google Gemini API, direct OpenAI API, and local models (Ollama, LM Studio, vLLM, MLX).
 
 ## What's New in v3.0.0 🎉
 
@@ -21,12 +21,14 @@
 
 ## Features
 
+- ✅ **Multi-provider support** - OpenRouter, Gemini, OpenAI, and local models via prefix routing
+- ✅ **Direct API access** - Use `g/gemini-2.0-flash` or `oai/gpt-4o` for direct API calls
+- ✅ **Local model support** - Ollama, LM Studio, vLLM, MLX with `ollama/`, `lmstudio/` prefixes
 - ✅ **Cross-platform** - Works with both Node.js and Bun (v1.3.0+)
 - ✅ **Universal compatibility** - Use with `npx` or `bunx` - no installation required
 - ✅ **Interactive setup** - Prompts for API key and model if not provided (zero config!)
 - ✅ **Monitor mode** - Proxy to real Anthropic API and log all traffic (for debugging)
 - ✅ **Protocol compliance** - 1:1 compatibility with Claude Code communication protocol
-- ✅ **Snapshot testing** - Comprehensive test suite with 13/13 passing tests
 - ✅ **Headless mode** - Automatic print mode for non-interactive execution
 - ✅ **Quiet mode** - Clean output by default (no log pollution)
 - ✅ **JSON output** - Structured data for tool integration
@@ -34,7 +36,6 @@
 - ✅ **Parallel runs** - Each instance gets isolated proxy
 - ✅ **Autonomous mode** - Bypass all prompts with flags
 - ✅ **Context inheritance** - Runs in current directory with same `.claude` settings
-- ✅ **Multiple models** - 10+ prioritized OpenRouter models
 - ✅ **Agent support** - Use Claude Code agents in headless mode with `--agent`
 - ✅ **Local model optimizations** - Smart context management for Ollama/LM Studio
 - ✅ **Auto-pruning** - Automatic conversation history management at 80% context
@@ -63,7 +64,11 @@ bun install -g claudish
 ### Prerequisites
 
 - [Claude Code](https://claude.com/claude-code) - Claude CLI must be installed
-- [OpenRouter API Key](https://openrouter.ai/keys) - Free tier available
+- At least one API key:
+  - [OpenRouter API Key](https://openrouter.ai/keys) - Access 100+ models (free tier available)
+  - [Google Gemini API Key](https://aistudio.google.com/apikey) - For direct Gemini access
+  - [OpenAI API Key](https://platform.openai.com/api-keys) - For direct OpenAI access
+  - Or local models (Ollama, LM Studio) - No API key needed
 
 ### Secure Setup (Recommended)
 
@@ -333,70 +338,94 @@ claudish [OPTIONS] <claude-args...>
 
 ### Environment Variables
 
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ **Optional in interactive mode** (prompts if not set)<br>✅ **Required in non-interactive mode** | - |
-| `ANTHROPIC_API_KEY` | Placeholder to prevent Claude Code dialog (not used for auth) | ✅ **Required** | - |
-| `CLAUDISH_MODEL` | Default model to use | ❌ No | - |
-| `CLAUDISH_PORT` | Default proxy port | ❌ No | Random (3000-9000) |
-| `CLAUDISH_ACTIVE_MODEL_NAME` | Auto-set by claudish to show active model in status line (read-only) | ❌ No | - |
-| **Local Model Tuning** | | | |
-| `CLAUDISH_TEMPERATURE` | Override model temperature (0.0-2.0) | ❌ No | Model-specific (usually 0.7) |
-| `CLAUDISH_TOP_P` | Override top-p sampling (0.0-1.0) | ❌ No | 0.9 |
-| `CLAUDISH_TOP_K` | Override top-k sampling (1-100) | ❌ No | 40 |
-| `CLAUDISH_MIN_P` | Override min-p sampling (0.0-1.0) | ❌ No | 0.0 |
-| `CLAUDISH_REP_PENALTY` | Override repetition penalty (1.0-2.0) | ❌ No | 1.0 |
-| `CLAUDISH_CONTEXT_WINDOW` | Override context window size (tokens) | ❌ No | Auto-detected |
-| `CLAUDISH_OLLAMA_KEEP_ALIVE` | Ollama: Keep model in memory (e.g., "30m", "5m", "-1" for indefinite) | ❌ No | 30m |
+#### API Keys (at least one required)
+
+| Variable | Description | Used For |
+|----------|-------------|----------|
+| `OPENROUTER_API_KEY` | OpenRouter API key | Default backend (100+ models) |
+| `GEMINI_API_KEY` | Google Gemini API key | Direct Gemini access (`g/` prefix) |
+| `OPENAI_API_KEY` | OpenAI API key | Direct OpenAI access (`oai/` prefix) |
+| `ANTHROPIC_API_KEY` | Placeholder (any value) | Prevents Claude Code dialog |
+
+#### Custom Endpoints (optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GEMINI_BASE_URL` | Custom Gemini endpoint | `https://generativelanguage.googleapis.com` |
+| `OPENAI_BASE_URL` | Custom OpenAI/Azure endpoint | `https://api.openai.com` |
+| `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
+| `LMSTUDIO_BASE_URL` | LM Studio server URL | `http://localhost:1234` |
+| `VLLM_BASE_URL` | vLLM server URL | `http://localhost:8000` |
+| `MLX_BASE_URL` | MLX server URL | `http://127.0.0.1:8080` |
+
+#### Other Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CLAUDISH_MODEL` | Default model to use | `openai/gpt-5.2` |
+| `CLAUDISH_PORT` | Default proxy port | Random (3000-9000) |
+| `CLAUDISH_CONTEXT_WINDOW` | Override context window size | Auto-detected |
 
 **Important Notes:**
-- **NEW in v3.0.0:** Automatic context management and optimization for local models
-- In interactive mode, if `OPENROUTER_API_KEY` is not set, you'll be prompted to enter it
 - You MUST set `ANTHROPIC_API_KEY=sk-ant-api03-placeholder` (or any value). Without it, Claude Code will show a dialog
+- In interactive mode, if no API key is set, you'll be prompted to enter one
 
-**Tuning Examples:**
+## Model Routing (v3.1.0+)
+
+Claudish uses **prefix-based routing** to determine which API backend to use:
+
+| Prefix | Backend | API Key | Example |
+|--------|---------|---------|---------|
+| _(none)_ | OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-5.2` |
+| `or/` | OpenRouter | `OPENROUTER_API_KEY` | `or/anthropic/claude-3.5-sonnet` |
+| `g/` `gemini/` `google/` | Google Gemini | `GEMINI_API_KEY` | `g/gemini-2.0-flash` |
+| `oai/` `openai/` | OpenAI | `OPENAI_API_KEY` | `oai/gpt-4o` |
+| `ollama/` | Ollama | _(none)_ | `ollama/llama3.2` |
+| `lmstudio/` | LM Studio | _(none)_ | `lmstudio/qwen2.5-coder` |
+| `vllm/` | vLLM | _(none)_ | `vllm/mistral-7b` |
+| `mlx/` | MLX | _(none)_ | `mlx/llama-3.2-3b` |
+| `http://...` | Custom | _(none)_ | `http://localhost:8000/model` |
+
+### Examples
+
 ```bash
-# Lower temperature for precise code generation
-export CLAUDISH_TEMPERATURE=0.3
+# OpenRouter (default) - 100+ models via unified API
+claudish --model openai/gpt-5.2 "implement feature"
+claudish --model anthropic/claude-3.5-sonnet "review code"
 
-# Higher temperature for creative tasks
-export CLAUDISH_TEMPERATURE=0.9
+# Direct Gemini API - lower latency, direct billing
+claudish --model g/gemini-2.0-flash "quick task"
+claudish --model gemini/gemini-2.5-pro "complex analysis"
 
-# Reduce repetition in responses
-export CLAUDISH_REP_PENALTY=1.15
+# Direct OpenAI API - lower latency, direct billing
+claudish --model oai/gpt-4o "implement feature"
+claudish --model openai/o1 "complex reasoning"
 
-# Keep Ollama model loaded indefinitely (faster follow-up requests)
-export CLAUDISH_OLLAMA_KEEP_ALIVE=-1
+# Local models - free, private, no API key needed
+claudish --model ollama/llama3.2 "code review"
+claudish --model lmstudio/qwen2.5-coder "refactor"
 ```
 
-## Available Models
+## Curated Models
 
-Claudish supports 5 OpenRouter models in priority order:
+Top recommended models for development (v3.1.1):
 
-1. **x-ai/grok-code-fast-1** (Default)
-   - Fast coding-focused model from xAI
-   - Best for quick iterations
+| Model | Provider | Best For |
+|-------|----------|----------|
+| `openai/gpt-5.2` | OpenAI | **Default** - Most advanced reasoning |
+| `minimax/minimax-m2.1` | MiniMax | Budget-friendly, fast |
+| `z-ai/glm-4.7` | Z.AI | Balanced performance |
+| `google/gemini-3-pro-preview` | Google | 1M context window |
+| `moonshotai/kimi-k2-thinking` | MoonShot | Extended reasoning |
+| `deepseek/deepseek-v3.2` | DeepSeek | Code specialist |
+| `qwen/qwen3-vl-235b-a22b-thinking` | Alibaba | Vision + reasoning |
 
-2. **openai/gpt-5-codex**
-   - Advanced coding model from OpenAI
-   - Best for complex implementations
-
-3. **minimax/minimax-m2**
-   - High-performance model from MiniMax
-   - Good for general coding tasks
-
-4. **zhipu-ai/glm-4.6**
-   - Advanced model from Zhipu AI
-   - Good for multilingual code
-
-5. **qwen/qwen3-vl-235b-a22b-instruct**
-   - Vision-language model from Alibaba
-   - Best for UI/visual tasks
-
-List models anytime with:
+List all models:
 
 ```bash
-claudish --models
+claudish --models              # List all OpenRouter models
+claudish --models gemini       # Search for specific models
+claudish --top-models          # Show curated recommendations
 ```
 
 ## Local Model Support (NEW in v3.0.0)
@@ -641,14 +670,19 @@ claudish "implement user authentication with JWT tokens"
 ### With Specific Model
 
 ```bash
-# Use Grok for fast coding
-claudish --model x-ai/grok-code-fast-1 "add error handling"
+# Use OpenRouter models (default)
+claudish --model openai/gpt-5.2 "refactor entire API layer"
+claudish --model deepseek/deepseek-v3.2 "add error handling"
 
-# Use GPT-5 Codex for complex tasks
-claudish --model openai/gpt-5-codex "refactor entire API layer"
+# Use direct Gemini API (faster, direct billing)
+claudish --model g/gemini-2.0-flash "quick fix"
 
-# Use Qwen for UI tasks
-claudish --model qwen/qwen3-vl-235b-a22b-instruct "implement dashboard UI"
+# Use direct OpenAI API
+claudish --model oai/gpt-4o "implement feature"
+
+# Use local models (free, private)
+claudish --model ollama/llama3.2 "code review"
+claudish --model lmstudio/qwen2.5-coder "implement dashboard UI"
 ```
 
 ### Autonomous Mode

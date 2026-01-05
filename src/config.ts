@@ -3,7 +3,7 @@
 
 import type { OpenRouterModel } from "./types.js";
 
-export const DEFAULT_MODEL: OpenRouterModel = "x-ai/grok-code-fast-1";
+export const DEFAULT_MODEL: OpenRouterModel = "openai/gpt-5.2";
 export const DEFAULT_PORT_RANGE = { start: 3000, end: 9000 };
 
 // Model metadata for validation and display
@@ -17,41 +17,47 @@ export const MODEL_INFO: Record<
     priority: 1,
     provider: "xAI",
   },
-  "minimax/minimax-m2": {
-    name: "Compact high-efficiency",
-    description: "Compact high-efficiency",
+  "minimax/minimax-m2.1": {
+    name: "Compact high-efficiency v2.1",
+    description: "Compact high-efficiency v2.1",
     priority: 2,
     provider: "MiniMax",
   },
-  "openai/gpt-5": {
-    name: "Most advanced reasoning",
-    description: "Most advanced reasoning",
+  "z-ai/glm-4.7": {
+    name: "GLM 4.7 balanced model",
+    description: "GLM 4.7 balanced model",
     priority: 3,
-    provider: "OpenAI",
+    provider: "Z.AI",
   },
-  "openai/gpt-5.1-codex": {
-    name: "Specialized for software engineering",
-    description: "Specialized for software engineering",
+  "google/gemini-3-pro-preview": {
+    name: "Gemini 3 Pro preview",
+    description: "Gemini 3 Pro preview (1M context)",
     priority: 4,
-    provider: "OpenAI",
-  },
-  "google/gemini-2.5-flash": {
-    name: "Advanced reasoning + vision",
-    description: "Advanced reasoning + vision",
-    priority: 5,
     provider: "Google",
   },
-  "qwen/qwen3-vl-235b-a22b-instruct": {
-    name: "Multimodal with OCR",
-    description: "Multimodal with OCR",
-    priority: 6,
-    provider: "Alibaba",
+  "openai/gpt-5.2": {
+    name: "GPT-5.2 most advanced",
+    description: "GPT-5.2 most advanced reasoning",
+    priority: 5,
+    provider: "OpenAI",
   },
-  "openrouter/polaris-alpha": {
-    name: "FREE experimental (logs usage)",
-    description: "FREE experimental (logs usage)",
+  "moonshotai/kimi-k2-thinking": {
+    name: "Kimi K2 with reasoning",
+    description: "Kimi K2 with extended thinking",
+    priority: 6,
+    provider: "MoonShot",
+  },
+  "deepseek/deepseek-v3.2": {
+    name: "DeepSeek V3.2 coding",
+    description: "DeepSeek V3.2 coding specialist",
     priority: 7,
-    provider: "OpenRouter",
+    provider: "DeepSeek",
+  },
+  "qwen/qwen3-vl-235b-a22b-thinking": {
+    name: "Qwen3 VL thinking",
+    description: "Qwen3 VL 235B with reasoning",
+    priority: 8,
+    provider: "Alibaba",
   },
   "custom": {
     name: "Custom Model",
@@ -79,6 +85,18 @@ export const ENV = {
   ANTHROPIC_DEFAULT_SONNET_MODEL: "ANTHROPIC_DEFAULT_SONNET_MODEL",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   CLAUDE_CODE_SUBAGENT_MODEL: "CLAUDE_CODE_SUBAGENT_MODEL",
+  // Local provider endpoints (OpenAI-compatible)
+  OLLAMA_BASE_URL: "OLLAMA_BASE_URL", // Ollama server (default: http://localhost:11434)
+  OLLAMA_HOST: "OLLAMA_HOST", // Alias for OLLAMA_BASE_URL
+  LMSTUDIO_BASE_URL: "LMSTUDIO_BASE_URL", // LM Studio server (default: http://localhost:1234)
+  VLLM_BASE_URL: "VLLM_BASE_URL", // vLLM server (default: http://localhost:8000)
+  // Remote cloud provider API keys and endpoints
+  GEMINI_API_KEY: "GEMINI_API_KEY", // Google Gemini API key (for g/, gemini/ prefixes)
+  GEMINI_BASE_URL: "GEMINI_BASE_URL", // Custom Gemini API endpoint (default: https://generativelanguage.googleapis.com)
+  OPENAI_API_KEY: "OPENAI_API_KEY", // OpenAI API key (for oai/, openai/ prefixes)
+  OPENAI_BASE_URL: "OPENAI_BASE_URL", // Custom OpenAI API endpoint (default: https://api.openai.com)
+  // Local model optimizations
+  CLAUDISH_SUMMARIZE_TOOLS: "CLAUDISH_SUMMARIZE_TOOLS", // Summarize tool descriptions to reduce prompt size
 } as const;
 
 // OpenRouter API Configuration
