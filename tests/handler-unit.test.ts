@@ -14,7 +14,7 @@ const mockGeminiProvider: RemoteProvider = {
   baseUrl: "https://generativelanguage.googleapis.com",
   apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
   apiKeyEnvVar: "GEMINI_API_KEY",
-  prefixes: ["g/", "gemini/", "google/"],
+  prefixes: ["g/", "gemini/"],
   capabilities: {
     supportsTools: true,
     supportsVision: true,

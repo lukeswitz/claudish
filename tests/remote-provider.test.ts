@@ -24,11 +24,10 @@ describe("Remote Provider Registry", () => {
       expect(result?.modelName).toBe("gemini-2.5-pro");
     });
 
-    test("should resolve google/ prefix to gemini", () => {
+    test("should NOT resolve google/ prefix (routes to OpenRouter instead)", () => {
+      // google/model should fall through to OpenRouter, not direct Gemini API
       const result = resolveRemoteProvider("google/gemini-3-pro");
-      expect(result).not.toBeNull();
-      expect(result?.provider.name).toBe("gemini");
-      expect(result?.modelName).toBe("gemini-3-pro");
+      expect(result).toBeNull(); // null means use OpenRouter default
     });
 
     test("should resolve oai/ prefix to openai", () => {

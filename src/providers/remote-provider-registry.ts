@@ -5,7 +5,7 @@
  * based on model ID prefixes.
  *
  * Prefix patterns:
- * - g/, gemini/, google/ -> Google Gemini API
+ * - g/, gemini/ -> Google Gemini API (direct)
  * - oai/, openai/ -> OpenAI API
  * - or/, no prefix with "/" -> OpenRouter (existing handler)
  */
@@ -21,7 +21,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     baseUrl: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com",
     apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "GEMINI_API_KEY",
-    prefixes: ["g/", "gemini/", "google/"],
+    prefixes: ["g/", "gemini/"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,

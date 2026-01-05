@@ -91,7 +91,7 @@ export const ENV = {
   LMSTUDIO_BASE_URL: "LMSTUDIO_BASE_URL", // LM Studio server (default: http://localhost:1234)
   VLLM_BASE_URL: "VLLM_BASE_URL", // vLLM server (default: http://localhost:8000)
   // Remote cloud provider API keys and endpoints
-  GEMINI_API_KEY: "GEMINI_API_KEY", // Google Gemini API key (for g/, gemini/, google/ prefixes)
+  GEMINI_API_KEY: "GEMINI_API_KEY", // Google Gemini API key (for g/, gemini/ prefixes)
   GEMINI_BASE_URL: "GEMINI_BASE_URL", // Custom Gemini API endpoint (default: https://generativelanguage.googleapis.com)
   OPENAI_API_KEY: "OPENAI_API_KEY", // OpenAI API key (for oai/, openai/ prefixes)
   OPENAI_BASE_URL: "OPENAI_BASE_URL", // Custom OpenAI API endpoint (default: https://api.openai.com)
