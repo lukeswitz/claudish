@@ -140,15 +140,9 @@ export class OpenRouterHandler implements ModelHandler {
 
     await this.middlewareManager.beforeRequest({ modelId: target, messages, tools, stream: true });
 
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...OPENROUTER_HEADERS,
-      },
-      body: JSON.stringify(openRouterPayload),
-    });
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+    let response: Response | null = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
